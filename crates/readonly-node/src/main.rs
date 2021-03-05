@@ -3,10 +3,12 @@ extern crate log;
 #[macro_use]
 extern crate serde;
 
+mod jsonrpc_server;
 mod poller;
 mod types;
 
 use crate::{
+    jsonrpc_server::start_jsonrpc_server,
     poller::poll_loop,
     types::{JsonRunnerConfig, RunnerConfig, StoreConfig},
 };
@@ -88,6 +90,14 @@ fn main() {
                 .help("CKB Indexer RPC URI")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("listen")
+                .short("l")
+                .long("listen")
+                .required(true)
+                .help("Listen address for JSONRPC server, sample: 0.0.0.0:4000")
+                .takes_value(true),
+        )
         .get_matches();
 
     let (s, ctrl_c) = async_channel::bounded(100);
@@ -147,6 +157,10 @@ fn main() {
             e = poll_loop(Arc::clone(&chain),
                           matches.value_of("ckb-rpc").unwrap().to_string()).fuse() => {
                 info!("Error occurs polling blocks: {:?}", e);
+                exit(1);
+            },
+            e = start_jsonrpc_server(matches.value_of("listen").unwrap().to_string()).fuse() => {
+                info!("Error running JSONRPC server: {:?}", e);
                 exit(1);
             },
         };
