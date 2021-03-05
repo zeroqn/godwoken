@@ -40,7 +40,7 @@ export interface StateValidatorLockGenerator {
 
 export interface GenesisStoreConfig {
   type: "genesis";
-  headerInfo: HexString;
+  header_info: HexString;
 }
 
 export type StoreConfig = GenesisStoreConfig;
@@ -58,8 +58,8 @@ export type AggregatorConfig = AlwaysSuccessAggregatorConfig | PoAConfig;
 
 export interface RunnerConfig {
   deploymentConfig: DeploymentConfig;
-  godwokenConfig: Config;
-  storeConfig: StoreConfig;
+  godwoken_config: Config;
+  store_config: StoreConfig;
   aggregatorConfig: AggregatorConfig;
 }
 
@@ -130,7 +130,7 @@ export async function tryExtractDepositionRequest(
     .ckbHash(
       core.SerializeScript(
         normalizers.NormalizeScript(
-          config.godwokenConfig.chain.rollup_type_script
+          config.godwoken_config.chain.rollup_type_script
         )
       )
     )

@@ -369,10 +369,10 @@ const run = async () => {
   };
   const runnerConfig = {
     deploymentConfig,
-    godwokenConfig,
-    storeConfig: {
+    godwoken_config: godwokenConfig,
+    store_config: {
       type: "genesis",
-      headerInfo: new Reader(packedHeaderInfo).serializeJson(),
+      header_info: new Reader(packedHeaderInfo).serializeJson(),
     },
     aggregatorConfig: undefined as any,
   };

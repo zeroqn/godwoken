@@ -92,7 +92,7 @@ export class Runner {
       .ckbHash(
         core.SerializeScript(
           normalizers.NormalizeScript(
-            config.godwokenConfig.chain.rollup_type_script
+            config.godwoken_config.chain.rollup_type_script
           )
         )
       )
@@ -151,7 +151,7 @@ export class Runner {
   _rollupCellQueryOptions(): QueryOptions {
     return {
       type: {
-        script: this.config.godwokenConfig.chain.rollup_type_script,
+        script: this.config.godwoken_config.chain.rollup_type_script,
         ioType: "output",
         argsLen: "any",
       },
@@ -230,7 +230,7 @@ export class Runner {
         if (
           isRollupTransction(
             tx,
-            this.config.godwokenConfig.chain.rollup_type_script
+            this.config.godwoken_config.chain.rollup_type_script
           )
         ) {
           await this._syncL2Block(tx, headerInfo);
