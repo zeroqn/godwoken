@@ -3,78 +3,30 @@ extern crate log;
 #[macro_use]
 extern crate serde;
 
-use async_jsonrpc_client::{HttpClient, Output, Params, Transport, Value};
+mod poller;
+mod types;
+
+use crate::{
+    poller::poll_loop,
+    types::{JsonRunnerConfig, RunnerConfig, StoreConfig},
+};
 use ckb_types::prelude::Unpack as CkbUnpack;
 use clap::{crate_version, App, Arg};
 use futures::{select, FutureExt};
 use gw_chain::{chain::Chain, next_block_context::NextBlockContext, tx_pool::TxPool};
 use gw_common::H256;
-use gw_config::{ChainConfig, Config};
+use gw_config::ChainConfig;
 use gw_generator::{
     account_lock_manage::{secp256k1::Secp256k1Eth, AccountLockManage},
     backend_manage::{Backend, BackendManage},
     Generator,
 };
-use gw_jsonrpc_types::{
-    ckb_jsonrpc_types::{HeaderView, JsonBytes},
-    parameter,
-};
 use gw_store::Store;
-use gw_types::{bytes::Bytes, packed, prelude::*};
+use gw_types::{bytes::Bytes, packed};
 use parking_lot::Mutex;
-use serde_json::{from_value, json};
 use std::fs::read_to_string;
 use std::process::exit;
 use std::sync::Arc;
-
-// TODO: those are generic godwoken configs used across multiple tools,
-// might be worth to split them into separate packages.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Debug)]
-#[serde(rename_all = "snake_case")]
-#[serde(tag = "type")]
-pub enum JsonStoreConfig {
-    Genesis { header_info: JsonBytes },
-}
-
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Debug)]
-#[serde(rename_all = "snake_case")]
-#[serde(tag = "type")]
-pub struct JsonRunnerConfig {
-    godwoken_config: parameter::Config,
-    store_config: JsonStoreConfig,
-}
-
-#[derive(Clone, Debug)]
-pub enum StoreConfig {
-    Genesis { header_info: packed::HeaderInfo },
-}
-
-#[derive(Clone, Debug)]
-pub struct RunnerConfig {
-    godwoken_config: Config,
-    store_config: StoreConfig,
-}
-
-impl From<JsonStoreConfig> for StoreConfig {
-    fn from(json: JsonStoreConfig) -> StoreConfig {
-        match json {
-            JsonStoreConfig::Genesis { header_info } => {
-                let header_info = packed::HeaderInfo::from_slice(header_info.into_bytes().as_ref())
-                    .expect("Error parsing header info!");
-                StoreConfig::Genesis { header_info }
-            }
-        }
-    }
-}
-
-impl From<JsonRunnerConfig> for RunnerConfig {
-    fn from(json: JsonRunnerConfig) -> RunnerConfig {
-        RunnerConfig {
-            godwoken_config: json.godwoken_config.into(),
-            store_config: json.store_config.into(),
-        }
-    }
-}
 
 fn build_generator(chain_config: &ChainConfig) -> Generator {
     let mut backend_manage = BackendManage::default();
@@ -199,27 +151,4 @@ fn main() {
             },
         };
     });
-}
-
-fn to_result(output: Output) -> anyhow::Result<Value> {
-    match output {
-        Output::Success(success) => Ok(success.result),
-        Output::Failure(failure) => Err(anyhow::anyhow!("JSONRPC error: {}", failure.error)),
-    }
-}
-
-async fn poll_loop(_chain: Arc<Chain>, ckb_rpc: String) -> anyhow::Result<()> {
-    let ckb_client = HttpClient::new(&ckb_rpc)?;
-
-    loop {
-        let header_response = to_result(
-            ckb_client
-                .request("get_tip_header", Some(Params::Array(vec![json!("0x1")])))
-                .await?,
-        )?;
-        let header: HeaderView = from_value(header_response)?;
-        println!("Current header: {:?}", header);
-
-        async_std::task::sleep(std::time::Duration::from_secs(1)).await;
-    }
 }
