@@ -3,8 +3,10 @@ extern crate log;
 #[macro_use]
 extern crate serde;
 
+use async_jsonrpc_client::{HttpClient, Output, Params, Transport, Value};
 use ckb_types::prelude::Unpack as CkbUnpack;
 use clap::{crate_version, App, Arg};
+use futures::{select, FutureExt};
 use gw_chain::{chain::Chain, next_block_context::NextBlockContext, tx_pool::TxPool};
 use gw_common::H256;
 use gw_config::{ChainConfig, Config};
@@ -13,11 +15,16 @@ use gw_generator::{
     backend_manage::{Backend, BackendManage},
     Generator,
 };
-use gw_jsonrpc_types::{ckb_jsonrpc_types::JsonBytes, parameter};
+use gw_jsonrpc_types::{
+    ckb_jsonrpc_types::{HeaderView, JsonBytes},
+    parameter,
+};
 use gw_store::Store;
 use gw_types::{bytes::Bytes, packed, prelude::*};
 use parking_lot::Mutex;
+use serde_json::{from_value, json};
 use std::fs::read_to_string;
+use std::process::exit;
 use std::sync::Arc;
 
 // TODO: those are generic godwoken configs used across multiple tools,
@@ -103,6 +110,34 @@ fn build_generator(chain_config: &ChainConfig) -> Generator {
 
 fn main() {
     drop(env_logger::init());
+    let matches = App::new("gw-readonly-node")
+        .version(crate_version!())
+        .arg(
+            Arg::with_name("runner-config")
+                .short("c")
+                .long("runner-config")
+                .required(true)
+                .help("Path to JSON file containing godwoken runner config")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("ckb-rpc")
+                .short("r")
+                .long("ckb-rpc")
+                .required(true)
+                .help("CKB RPC URI")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("indexer-rpc")
+                .short("i")
+                .long("indexer-rpc")
+                .required(true)
+                .help("CKB Indexer RPC URI")
+                .takes_value(true),
+        )
+        .get_matches();
+
     let (s, ctrl_c) = async_channel::bounded(100);
     let handle = move || {
         s.try_send(()).ok();
@@ -110,18 +145,6 @@ fn main() {
     ctrlc::set_handler(handle).unwrap();
 
     smol::block_on(async {
-        let matches = App::new("gw-readonly-node")
-            .version(crate_version!())
-            .arg(
-                Arg::with_name("runner-config")
-                    .short("c")
-                    .long("runner-config")
-                    .required(true)
-                    .help("Path to JSON file containing godwoken runner config")
-                    .takes_value(true),
-            )
-            .get_matches();
-
         let runner_config_file = matches.value_of("runner-config").unwrap();
         let runner_config_data =
             read_to_string(&runner_config_file).expect("Cannot read runner config file!");
@@ -155,18 +178,48 @@ fn main() {
             .expect("Error creating TxPool");
             Arc::new(Mutex::new(tx_pool))
         };
-        let chain = Chain::create(
-            runner_config.godwoken_config.chain.clone(),
-            store,
-            build_generator(&runner_config.godwoken_config.chain),
-            Arc::clone(&tx_pool),
-        )
-        .expect("Error creating chain");
+        let chain = Arc::new(
+            Chain::create(
+                runner_config.godwoken_config.chain.clone(),
+                store,
+                build_generator(&runner_config.godwoken_config.chain),
+                Arc::clone(&tx_pool),
+            )
+            .expect("Error creating chain"),
+        );
 
         debug!("Readonly node is booted!");
 
-        ctrl_c.recv().await.ok();
-
-        debug!("Exiting...");
+        select! {
+            _ = ctrl_c.recv().fuse() => debug!("Exiting..."),
+            e = poll_loop(Arc::clone(&chain),
+                          matches.value_of("ckb-rpc").unwrap().to_string()).fuse() => {
+                info!("Error occurs polling blocks: {:?}", e);
+                exit(1);
+            },
+        };
     });
+}
+
+fn to_result(output: Output) -> anyhow::Result<Value> {
+    match output {
+        Output::Success(success) => Ok(success.result),
+        Output::Failure(failure) => Err(anyhow::anyhow!("JSONRPC error: {}", failure.error)),
+    }
+}
+
+async fn poll_loop(_chain: Arc<Chain>, ckb_rpc: String) -> anyhow::Result<()> {
+    let ckb_client = HttpClient::new(&ckb_rpc)?;
+
+    loop {
+        let header_response = to_result(
+            ckb_client
+                .request("get_tip_header", Some(Params::Array(vec![json!("0x1")])))
+                .await?,
+        )?;
+        let header: HeaderView = from_value(header_response)?;
+        println!("Current header: {:?}", header);
+
+        async_std::task::sleep(std::time::Duration::from_secs(1)).await;
+    }
 }
