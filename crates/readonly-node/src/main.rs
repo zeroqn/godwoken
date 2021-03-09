@@ -3,6 +3,7 @@ extern crate log;
 #[macro_use]
 extern crate serde;
 
+mod indexer_types;
 mod jsonrpc_server;
 mod poller;
 mod types;
@@ -25,7 +26,7 @@ use gw_generator::{
 };
 use gw_store::Store;
 use gw_types::{bytes::Bytes, packed};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use std::fs::read_to_string;
 use std::process::exit;
 use std::sync::Arc;
@@ -140,7 +141,7 @@ fn main() {
             .expect("Error creating TxPool");
             Arc::new(Mutex::new(tx_pool))
         };
-        let chain = Arc::new(
+        let chain = Arc::new(RwLock::new(
             Chain::create(
                 runner_config.godwoken_config.chain.clone(),
                 store,
@@ -148,14 +149,16 @@ fn main() {
                 Arc::clone(&tx_pool),
             )
             .expect("Error creating chain"),
-        );
+        ));
 
         debug!("Readonly node is booted!");
 
         select! {
             _ = ctrl_c.recv().fuse() => debug!("Exiting..."),
             e = poll_loop(Arc::clone(&chain),
-                          matches.value_of("ckb-rpc").unwrap().to_string()).fuse() => {
+                          runner_config,
+                          matches.value_of("ckb-rpc").unwrap().to_string(),
+                          matches.value_of("indexer-rpc").unwrap().to_string()).fuse() => {
                 info!("Error occurs polling blocks: {:?}", e);
                 exit(1);
             },
