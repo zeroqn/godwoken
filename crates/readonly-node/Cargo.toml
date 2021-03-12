@@ -29,7 +29,7 @@ parking_lot = "0.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 smol = "1.2.5"
-sqlx = { version = "0.5", features = [ "runtime-async-std-native-tls" ] }
+sqlx = { version = "0.5", features = [ "runtime-async-std-native-tls", "postgres", "sqlite" ] }
 tokio = { version = "1.0.1", default-features = false, features = ["rt-multi-thread"] }
 
 ckb-types = "0.37.0"
