@@ -3,9 +3,10 @@ use crate::{
     types::RunnerConfig,
 };
 use async_jsonrpc_client::{HttpClient, Output, Params as ClientParams, Transport};
+use ckb_hash::blake2b_256;
 use ckb_types::{
     core::ScriptHashType,
-    packed::{self as ckb_packed, Transaction},
+    packed::{self as ckb_packed, Transaction, WitnessArgs},
     prelude::Unpack as CkbUnpack,
     H256,
 };
@@ -15,12 +16,13 @@ use gw_chain::{
 };
 use gw_jsonrpc_types::ckb_jsonrpc_types::{BlockNumber, HeaderView, TransactionWithStatus, Uint32};
 use gw_types::{
-    packed::{DepositionLockArgs, DepositionRequest, HeaderInfo},
+    packed::{DepositionLockArgs, DepositionRequest, HeaderInfo, L2Block},
     prelude::*,
 };
 use parking_lot::RwLock;
 use serde::de::DeserializeOwned;
 use serde_json::{from_value, json};
+use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -36,10 +38,16 @@ pub async fn poll_loop(
     config: RunnerConfig,
     ckb_rpc: String,
     indexer_rpc: String,
+    sql_address: String,
 ) -> anyhow::Result<()> {
+    // TODO: support for more SQL databases
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&sql_address)
+        .await?;
     let ckb_client = HttpClient::new(&ckb_rpc)?;
     let indexer_client = HttpClient::new(&indexer_rpc)?;
-    let mut chain_updater = ChainUpdater::new(Arc::clone(&chain), ckb_client, config.clone());
+    let mut chain_updater = ChainUpdater::new(Arc::clone(&chain), pool, ckb_client, config.clone());
 
     loop {
         let tip_l1_block = chain.read().local_state().last_synced().number();
@@ -112,16 +120,19 @@ pub struct ChainUpdater {
     pub ckb_client: HttpClient,
     pub last_tx_hash: Option<H256>,
     pub runner_config: RunnerConfig,
+    pub pool: PgPool,
 }
 
 impl ChainUpdater {
     pub fn new(
         chain: Arc<RwLock<Chain>>,
+        pool: PgPool,
         ckb_client: HttpClient,
         runner_config: RunnerConfig,
     ) -> ChainUpdater {
         ChainUpdater {
             chain,
+            pool,
             ckb_client,
             runner_config,
             last_tx_hash: None,
@@ -176,7 +187,7 @@ impl ChainUpdater {
             deposition_requests: requests,
         };
         let update = L1Action {
-            transaction: tx,
+            transaction: tx.clone(),
             header_info,
             context,
         };
@@ -193,6 +204,36 @@ impl ChainUpdater {
             next_block_context,
         };
         self.chain.write().sync(sync_param)?;
+        self.insert_to_sql(&tx).await?;
+        Ok(())
+    }
+
+    async fn insert_to_sql(&self, l1_transaction: &Transaction) -> anyhow::Result<()> {
+        let witness = l1_transaction
+            .witnesses()
+            .get(0)
+            .ok_or_else(|| anyhow::anyhow!("Witness missing for L2 block!"))?;
+        let witness_args = WitnessArgs::from_slice(&witness.raw_data())?;
+        let raw_l2_block = witness_args
+            .output_type()
+            .to_opt()
+            .ok_or_else(|| anyhow::anyhow!("Missing L2 block!"))?;
+        let l2_block = L2Block::from_slice(&raw_l2_block.raw_data())?;
+        let number: u64 = l2_block.raw().number().unpack();
+        let hash: H256 = blake2b_256(l2_block.raw().as_slice()).into();
+        let epoch_time: u64 = l2_block.raw().timestamp().unpack();
+        // TODO: this is just a proof of concept work now, we need to fill in more data
+        sqlx::query("INSERT INTO blocks (number, hash, parent_hash, logs_bloom, gas_limit, gas_used, timestamp, miner, size) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)")
+            .bind(number as i64)
+            .bind(format!("{:#x}", hash))
+            .bind("0x0000000000000000000000000000000000000000000000000000000000000000")
+            .bind("")
+            .bind(0i64)
+            .bind(0i64)
+            .bind(sqlx::types::chrono::NaiveDateTime::from_timestamp(epoch_time as i64, 0))
+            .bind(format!("{}", l2_block.raw().aggregator_id()))
+            .bind(l2_block.as_slice().len() as i64)
+            .execute(&self.pool).await?;
         Ok(())
     }
 

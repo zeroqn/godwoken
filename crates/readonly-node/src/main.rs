@@ -99,6 +99,14 @@ fn main() {
                 .help("Listen address for JSONRPC server, sample: 0.0.0.0:4000")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("sql-address")
+                .short("s")
+                .long("sql")
+                .required(true)
+                .help("SQL address")
+                .takes_value(true),
+        )
         .get_matches();
 
     let (s, ctrl_c) = async_channel::bounded(100);
@@ -158,7 +166,8 @@ fn main() {
             e = poll_loop(Arc::clone(&chain),
                           runner_config,
                           matches.value_of("ckb-rpc").unwrap().to_string(),
-                          matches.value_of("indexer-rpc").unwrap().to_string()).fuse() => {
+                          matches.value_of("indexer-rpc").unwrap().to_string(),
+                          matches.value_of("sql-address").unwrap().to_string()).fuse() => {
                 info!("Error occurs polling blocks: {:?}", e);
                 exit(1);
             },
