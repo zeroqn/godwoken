@@ -368,7 +368,7 @@ const run = async () => {
     rollup_type_script: typeScript,
   };
   const runnerConfig = {
-    deploymentConfig,
+    deployment_config: deploymentConfig,
     godwoken_config: godwokenConfig,
     store_config: {
       type: "genesis",

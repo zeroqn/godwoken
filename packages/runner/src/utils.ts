@@ -57,7 +57,7 @@ export interface PoAConfig {
 export type AggregatorConfig = AlwaysSuccessAggregatorConfig | PoAConfig;
 
 export interface RunnerConfig {
-  deploymentConfig: DeploymentConfig;
+  deployment_config: DeploymentConfig;
   godwoken_config: Config;
   store_config: StoreConfig;
   aggregatorConfig: AggregatorConfig;
@@ -115,9 +115,9 @@ export async function tryExtractDepositionRequest(
 ): Promise<DepositionEntry | undefined> {
   if (
     cell.cell_output.lock.code_hash !==
-      config.deploymentConfig.deposition_lock.code_hash ||
+      config.deployment_config.deposition_lock.code_hash ||
     cell.cell_output.lock.hash_type !==
-      config.deploymentConfig.deposition_lock.hash_type
+      config.deployment_config.deposition_lock.hash_type
   ) {
     return undefined;
   }
