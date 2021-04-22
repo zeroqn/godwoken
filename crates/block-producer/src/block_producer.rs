@@ -22,7 +22,7 @@ use gw_types::{
     core::{DepType, ScriptHashType},
     packed::{
         Byte32, CellDep, CellInput, CellOutput, CustodianLockArgs, DepositionLockArgs, GlobalState,
-        L2Block, OutPoint, OutPointVec, Script, Transaction, WitnessArgs,
+        L2Block, OutPoint, OutPointVec, Script, StakeLockArgs, Transaction, WitnessArgs,
     },
     prelude::*,
 };
@@ -30,6 +30,7 @@ use parking_lot::Mutex;
 use std::{
     collections::{HashMap, HashSet},
     convert::TryFrom,
+    iter::FromIterator,
     sync::Arc,
 };
 
@@ -72,6 +73,63 @@ fn generate_custodian_cells(
             (cell, data)
         })
         .collect()
+}
+
+// TODO: able to use unlocked stake cell
+async fn generate_stake_cell(
+    rollup_context: &RollupContext,
+    block: &L2Block,
+    rpc_client: &RPCClient,
+    lock_script: Script,
+) -> Result<(Vec<InputCellInfo>, (CellOutput, Bytes))> {
+    let required_staking_capacity = rollup_context.rollup_config.required_staking_capacity();
+    let cells = rpc_client
+        .query_payment_cells(lock_script.clone(), required_staking_capacity.unpack())
+        .await?;
+    if cells.is_empty() {
+        return Err(anyhow!("no cells to generate stake cell"));
+    }
+
+    let input_cells = cells
+        .into_iter()
+        .map(|cell| {
+            let input = CellInput::new_builder()
+                .previous_output(cell.out_point.clone())
+                .build();
+            InputCellInfo { input, cell }
+        })
+        .collect();
+
+    let lock_args = {
+        let owner_lock_hash = {
+            let hash = ckb_types::packed::Script::from_slice(lock_script.as_slice())
+                .map_err(|e| anyhow!("invalid stake lock script {}", e))?
+                .calc_script_hash();
+            Byte32::from_slice(hash.as_slice()).map_err(|_| anyhow!("invalid stake lock hash"))?
+        };
+
+        let stake_lock_args = StakeLockArgs::new_builder()
+            .owner_lock_hash(owner_lock_hash)
+            .stake_block_number(block.raw().number())
+            .build();
+
+        let rollup_type_hash = rollup_context.rollup_script_hash.as_slice().iter().cloned();
+        Bytes::from_iter(rollup_type_hash.chain(stake_lock_args.as_slice().iter().cloned()))
+    };
+    let lock = Script::new_builder()
+        .code_hash(rollup_context.rollup_config.stake_script_type_hash())
+        .hash_type(ScriptHashType::Type.into())
+        .args(lock_args.pack())
+        .build();
+
+    let capacity =
+        (8u64 + lock.as_slice().len() as u64) * 100000000 + required_staking_capacity.unpack();
+    let cell = CellOutput::new_builder()
+        .capacity(capacity.pack())
+        .lock(lock)
+        .build();
+
+    Ok((input_cells, (cell, Bytes::new())))
 }
 
 async fn resolve_tx_deps(rpc_client: &RPCClient, tx_hash: [u8; 32]) -> Result<Vec<CellInfo>> {
