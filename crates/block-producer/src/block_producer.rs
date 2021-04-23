@@ -1,12 +1,15 @@
 #![allow(clippy::clippy::mutable_key_type)]
 
-use crate::rpc_client::{DepositInfo, RPCClient};
 use crate::transaction_skeleton::TransactionSkeleton;
 use crate::utils::{fill_tx_fee, CKBGenesisInfo};
 use crate::wallet::Wallet;
 use crate::{
     produce_block::{produce_block, ProduceBlockParam, ProduceBlockResult},
     types::{CellInfo, InputCellInfo},
+};
+use crate::{
+    rpc_client::{DepositInfo, RPCClient},
+    tester::Tester,
 };
 use anyhow::{anyhow, Context, Result};
 use ckb_types::prelude::Unpack as CKBUnpack;
@@ -360,6 +363,7 @@ pub struct BlockProducer {
     mem_pool: Arc<Mutex<MemPool>>,
     generator: Arc<Generator>,
     wallet: Wallet,
+    tester: Tester,
     config: BlockProducerConfig,
     rpc_client: RPCClient,
     ckb_genesis_info: CKBGenesisInfo,
@@ -376,6 +380,7 @@ impl BlockProducer {
         rpc_client: RPCClient,
         ckb_genesis_info: CKBGenesisInfo,
         config: BlockProducerConfig,
+        tester: Tester,
     ) -> Result<Self> {
         let wallet = Wallet::from_config(&config.wallet_config).with_context(|| "init wallet")?;
 
@@ -389,6 +394,7 @@ impl BlockProducer {
             wallet,
             ckb_genesis_info,
             config,
+            tester,
         };
         Ok(block_producer)
     }
@@ -469,6 +475,7 @@ impl BlockProducer {
 
         // send transaction
         self.rpc_client.send_transaction(tx.clone()).await?;
+
         Ok(())
     }
 }
