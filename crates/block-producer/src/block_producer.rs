@@ -82,24 +82,6 @@ async fn generate_stake_cell(
     rpc_client: &RPCClient,
     lock_script: Script,
 ) -> Result<(Vec<InputCellInfo>, (CellOutput, Bytes))> {
-    let required_staking_capacity = rollup_context.rollup_config.required_staking_capacity();
-    let cells = rpc_client
-        .query_payment_cells(lock_script.clone(), required_staking_capacity.unpack())
-        .await?;
-    if cells.is_empty() {
-        return Err(anyhow!("no cells to generate stake cell"));
-    }
-
-    let input_cells = cells
-        .into_iter()
-        .map(|cell| {
-            let input = CellInput::new_builder()
-                .previous_output(cell.out_point.clone())
-                .build();
-            InputCellInfo { input, cell }
-        })
-        .collect();
-
     let lock_args = {
         let owner_lock_hash = {
             let hash = ckb_types::packed::Script::from_slice(lock_script.as_slice())
@@ -122,14 +104,45 @@ async fn generate_stake_cell(
         .args(lock_args.pack())
         .build();
 
-    let capacity =
-        (8u64 + lock.as_slice().len() as u64) * 100000000 + required_staking_capacity.unpack();
-    let cell = CellOutput::new_builder()
-        .capacity(capacity.pack())
+    let stake_capacity = {
+        let required_staking_capacity = rollup_context
+            .rollup_config
+            .required_staking_capacity()
+            .unpack();
+
+        assert!(lock.as_slice().len() < u64::max_value() as usize);
+        let min_capacity = (8u64 + lock.as_slice().len() as u64) * 100000000;
+
+        if required_staking_capacity <= min_capacity {
+            min_capacity
+        } else {
+            required_staking_capacity
+        }
+    };
+
+    let payment_cells = rpc_client
+        .query_payment_cells(lock_script.clone(), stake_capacity)
+        .await?;
+    if payment_cells.is_empty() {
+        return Err(anyhow!("no cells to generate stake cell"));
+    }
+
+    let input_cells = payment_cells
+        .into_iter()
+        .map(|cell| {
+            let input = CellInput::new_builder()
+                .previous_output(cell.out_point.clone())
+                .build();
+            InputCellInfo { input, cell }
+        })
+        .collect();
+
+    let stake_cell = CellOutput::new_builder()
+        .capacity(stake_capacity.pack())
         .lock(lock)
         .build();
 
-    Ok((input_cells, (cell, Bytes::new())))
+    Ok((input_cells, (stake_cell, Bytes::new())))
 }
 
 async fn resolve_tx_deps(rpc_client: &RPCClient, tx_hash: [u8; 32]) -> Result<Vec<CellInfo>> {
