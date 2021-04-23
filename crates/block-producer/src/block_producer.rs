@@ -475,7 +475,6 @@ impl BlockProducer {
 
         // send transaction
         self.rpc_client.send_transaction(tx.clone()).await?;
-
         Ok(())
     }
 }

@@ -1,8 +1,10 @@
-use crate::{rpc_client::RPCClient, transaction_skeleton::TransactionSkeleton};
+use crate::{
+    rpc_client::RPCClient, transaction_skeleton::TransactionSkeleton, utils::CKBGenesisInfo,
+};
 use crate::{types::CellInfo, wallet::Wallet};
 use crate::{types::InputCellInfo, utils::fill_tx_fee};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use ckb_types::{
     bytes::Bytes,
     prelude::{Builder, Entity},
@@ -10,7 +12,8 @@ use ckb_types::{
 use gw_config::{BlockProducerConfig, WalletConfig};
 use gw_generator::RollupContext;
 use gw_types::{
-    packed::{CellInput, CellOutput, OutPoint, Transaction},
+    core::DepType,
+    packed::{Byte32, CellDep, CellInput, CellOutput, OutPoint, Transaction},
     prelude::{Pack, Unpack},
 };
 use parking_lot::Mutex;
@@ -65,14 +68,37 @@ impl Tester {
         &self,
         wallet: &Wallet,
         block_producer_config: &BlockProducerConfig,
+        ckb_genesis_info: &CKBGenesisInfo,
     ) -> Result<()> {
-        let rollup_dep = block_producer_config.rollup_cell_type_dep.clone();
         let stake_lock_dep = block_producer_config.stake_cell_lock_dep.clone();
+        let rollup_cell = {
+            let opt_rollup_cell = self.rpc_client.query_rollup_cell().await?;
+            let rollup_cell_info =
+                opt_rollup_cell.ok_or_else(|| anyhow!("can't find rollup cell"))?;
+            // let rollup_cell_type_hash = {
+            //     let opt_rollup_type = rollup_cell_info.output.type_().to_opt();
+            //     let rollup_type = opt_rollup_type.expect("rollup without type script");
+            //
+            //     let hash = ckb_types::packed::Script::from_slice(rollup_type.as_slice())
+            //         .map_err(|e| anyhow!("invalid rollup type script {}", e))?
+            //         .calc_script_hash();
+            //     Byte32::from_slice(hash.as_slice())
+            //         .map_err(|_| anyhow!("invalid rollup type hash"))?
+            // };
+
+            // We just read rollup data, so DepType is meanless here
+            CellDep::new_builder()
+                .out_point(rollup_cell_info.out_point)
+                .dep_type(DepType::Code.into())
+                .build()
+        };
 
         let mut tx_skeleton = TransactionSkeleton::default();
-        tx_skeleton
-            .cell_deps_mut()
-            .extend(vec![rollup_dep.into(), stake_lock_dep.into()]);
+        tx_skeleton.cell_deps_mut().extend(vec![
+            rollup_cell.into(),
+            stake_lock_dep.into(),
+            ckb_genesis_info.sighash_dep(),
+        ]);
 
         // Inputs
         let stake_info = { self.stake_info.lock().drain(..).collect::<Vec<_>>() };
