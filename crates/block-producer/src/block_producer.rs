@@ -86,15 +86,10 @@ async fn generate_stake_cell(
     lock_script: Script,
 ) -> Result<(Vec<InputCellInfo>, (CellOutput, Bytes))> {
     let lock_args = {
-        let owner_lock_hash = {
-            let hash = ckb_types::packed::Script::from_slice(lock_script.as_slice())
-                .map_err(|e| anyhow!("invalid stake lock script {}", e))?
-                .calc_script_hash();
-            Byte32::from_slice(hash.as_slice()).map_err(|_| anyhow!("invalid stake lock hash"))?
-        };
+        let owner_lock_hash = lock_script.hash();
 
         let stake_lock_args = StakeLockArgs::new_builder()
-            .owner_lock_hash(owner_lock_hash)
+            .owner_lock_hash(owner_lock_hash.pack())
             .stake_block_number(block.raw().number())
             .build();
 
