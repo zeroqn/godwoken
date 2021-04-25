@@ -1,3 +1,5 @@
+use std::iter::FromIterator;
+
 use crate::indexer_types::{Cell, Order, Pagination, ScriptType, SearchKey, SearchKeyFilter};
 use crate::types::CellInfo;
 use anyhow::Result;
@@ -10,8 +12,8 @@ use gw_types::{
     bytes::Bytes,
     core::ScriptHashType,
     packed::{
-        Block, CellOutput, DepositionLockArgs, DepositionLockArgsReader, DepositionRequest,
-        OutPoint, Script, StakeLockArgs, StakeLockArgsReader, Transaction,
+        Block, CellOutput, CustodianLockArgs, DepositionLockArgs, DepositionLockArgsReader,
+        DepositionRequest, OutPoint, Script, StakeLockArgs, StakeLockArgsReader, Transaction,
     },
     prelude::*,
 };
@@ -19,11 +21,20 @@ use serde::de::DeserializeOwned;
 use serde_json::{from_value, json};
 
 const DEFAULT_QUERY_LIMIT: usize = 1000;
+const FINALIZED_CUSTODIAN_BLOCK_NUMBER: u64 = 0;
+const FINALIZED_CUSTODIAN_BLOCK_HASH: [u8; 32] = [0u8; 32];
 
 #[derive(Debug, Clone)]
 pub struct DepositInfo {
     pub request: DepositionRequest,
     pub cell: CellInfo,
+}
+
+#[derive(Debug)]
+pub struct CollectedCustodianCells {
+    pub cells: Vec<CellInfo>,
+    pub capacity: u64,
+    pub sudt_amount: u128,
 }
 
 fn to_result<T: DeserializeOwned>(output: Output) -> anyhow::Result<T> {
@@ -62,6 +73,16 @@ fn parse_deposit_request(
         .sudt_script_hash(sudt_script_hash.pack())
         .build();
     Some(request)
+}
+
+fn parse_sudt_amount(cell_info: &CellInfo) -> Option<u128> {
+    if cell_info.output.type_().is_none() {
+        return None;
+    }
+
+    gw_types::packed::Uint128::from_slice(&cell_info.data)
+        .map(|a| a.unpack())
+        .ok()
 }
 
 #[derive(Clone)]
@@ -435,6 +456,115 @@ impl RPCClient {
         };
 
         Ok(unlocked_cell.map(unlocked_cell_info))
+    }
+
+    pub async fn query_finalized_custodian_cells(
+        &self,
+        required_capacity: u64,
+        required_sudt_amount: u128,
+    ) -> Result<CollectedCustodianCells> {
+        let rollup_type_hash = self.rollup_context.rollup_script_hash.as_slice().iter();
+
+        let finalized_custodian_lock = {
+            let finalized_custodian_lock_args = CustodianLockArgs::new_builder()
+                .deposition_block_hash(FINALIZED_CUSTODIAN_BLOCK_HASH.pack())
+                .deposition_block_number(FINALIZED_CUSTODIAN_BLOCK_NUMBER.pack())
+                .deposition_lock_args(DepositionLockArgs::default())
+                .build();
+
+            let args = Bytes::from_iter(
+                rollup_type_hash
+                    .cloned()
+                    .chain(finalized_custodian_lock_args.as_bytes().into_iter()),
+            );
+
+            Script::new_builder()
+                .code_hash(
+                    self.rollup_context
+                        .rollup_config
+                        .custodian_script_type_hash(),
+                )
+                .hash_type(ScriptHashType::Type.into())
+                .args(args.pack())
+                .build()
+        };
+
+        let search_key = SearchKey {
+            script: ckb_types::packed::Script::new_unchecked(finalized_custodian_lock.as_bytes())
+                .into(),
+            script_type: ScriptType::Lock,
+            filter: None,
+        };
+        let order = Order::Desc;
+        let limit = Uint32::from(DEFAULT_QUERY_LIMIT as u32);
+
+        let mut collected_cells = Vec::new();
+        let mut collected_capacity = 0u64;
+        let mut collected_sudt_amount = 0u128;
+        let mut cursor = None;
+        while collected_capacity < required_capacity || collected_sudt_amount < required_sudt_amount
+        {
+            let cells: Pagination<Cell> = to_result(
+                self.indexer_client
+                    .request(
+                        "get_cells",
+                        Some(ClientParams::Array(vec![
+                            json!(search_key),
+                            json!(order),
+                            json!(limit),
+                            json!(cursor),
+                        ])),
+                    )
+                    .await?,
+            )?;
+            cursor = Some(cells.last_cursor);
+            let cells = cells.objects.into_iter().filter_map(|cell| {
+                // Sudt deposit must have type script
+                if cell.output_data.is_empty() && cell.output.type_.is_some() {
+                    return None;
+                }
+
+                // Capacity deposit must be data free
+                if !cell.output_data.is_empty() && cell.output.type_.is_none() {
+                    return None;
+                }
+
+                let out_point = {
+                    let out_point: ckb_types::packed::OutPoint = cell.out_point.into();
+                    OutPoint::new_unchecked(out_point.as_bytes())
+                };
+
+                let output = {
+                    let output: ckb_types::packed::CellOutput = cell.output.into();
+                    CellOutput::new_unchecked(output.as_bytes())
+                };
+
+                Some(CellInfo {
+                    out_point,
+                    output,
+                    data: cell.output_data.into_bytes(),
+                })
+            });
+
+            for cell in cells {
+                collected_capacity =
+                    collected_capacity.saturating_add(cell.output.capacity().unpack());
+                collected_sudt_amount =
+                    collected_sudt_amount.saturating_add(parse_sudt_amount(&cell).unwrap_or(0));
+                collected_cells.push(cell);
+                if collected_capacity >= required_capacity
+                    && collected_sudt_amount >= required_sudt_amount
+                {
+                    break;
+                }
+            }
+        }
+
+        Ok(CollectedCustodianCells {
+            cells: collected_cells,
+            capacity: collected_capacity,
+            sudt_amount: collected_sudt_amount,
+        })
     }
 
     pub async fn get_transaction(&self, tx_hash: [u8; 32]) -> Result<Option<Transaction>> {

@@ -25,7 +25,8 @@ use gw_types::{
     core::{DepType, ScriptHashType},
     packed::{
         Byte32, CellDep, CellInput, CellOutput, CustodianLockArgs, DepositionLockArgs, GlobalState,
-        L2Block, OutPoint, OutPointVec, Script, StakeLockArgs, Transaction, WitnessArgs,
+        L2Block, OutPoint, OutPointVec, Script, ScriptOpt, StakeLockArgs, Transaction,
+        WithdrawalLockArgs, WithdrawalRequest, WitnessArgs,
     },
     prelude::*,
 };
@@ -141,6 +142,67 @@ async fn generate_stake_cell(
         .build();
 
     Ok((input_cells, (stake_cell, Bytes::new())))
+}
+
+async fn generate_withdrawal_cells(
+    rpc_client: &RPCClient,
+    rollup_context: &RollupContext,
+    block: &L2Block,
+) -> Result<Vec<(CellOutput, Bytes)>> {
+    unimplemented!()
+    // let (withdrawal_capacity, withdrawal_sudt_amount) =
+    //     block
+    //         .withdrawals()
+    //         .into_iter()
+    //         .fold((0u64, 0u128), |acc, req| {
+    //             acc.0 = acc.0.saturating_add(req.raw().capacity().unpack());
+    //             acc.1 = acc.1.saturating_add(req.raw().amount().unpack());
+    //             acc
+    //         });
+    //
+    // let collected_custodian_cells = rpc_client
+    //     .query_finalized_custodian_cells(withdrawal_capacity, withdrawal_sudt_amount)
+    //     .await?;
+    // let withdrawal_sudt_type_script = {
+    //     let opt_sudt_custodian_cell = collected_custodian_cells
+    //         .cells
+    //         .iter()
+    //         .find(|cell| cell.output.type_().is_some());
+    //     opt_sudt_custodian_cell.map_or_else(
+    //         || ScriptOpt::new_builder().build(),
+    //         |cell| cell.output.type_(),
+    //     )
+    // };
+    //
+    // let build_withdraw_output = |req: WithdrawalRequest| -> (CellOutput, Bytes) {
+    //     let lock_args = {
+    //         let withdrawal_lock_args = WithdrawalLockArgs::new_builder()
+    //             .account_script_hash(req.raw().account_script_hash())
+    //             .withdrawal_block_hash(block.hash().pack())
+    //             .withdrawal_block_number(block.raw().number())
+    //             .sudt_script_hash(req.raw().sudt_script_hash())
+    //             .sell_amount(req.raw().sell_amount())
+    //             .sell_capacity(req.raw().sell_capacity())
+    //             .owner_lock_hash(req.raw().owner_lock_hash())
+    //             .payment_lock_hash(req.raw().payment_lock_hash())
+    //             .build();
+    //
+    //         let rollup_type_hash = rollup_context.rollup_script_hash.as_slice().iter().cloned();
+    //         Bytes::from_iter(rollup_type_hash.chain(withdrawal_lock_args.as_bytes().into_iter()))
+    //     };
+    //
+    //     let lock = Script::new_builder()
+    //         .code_hash(rollup_context.rollup_config.withdrawal_script_type_hash())
+    //         .hash_type(ScriptHashType::Type.into())
+    //         .args(lock_args.pack())
+    //         .build();
+    //
+    //     let type_ = if req.raw().amount().unpack() != 0 {
+    //         withdrawal_sudt_type_script
+    //     }
+    // };
+    //
+    // block.withdrawals().into_iter().map(build_withdraw_output)
 }
 
 async fn resolve_tx_deps(rpc_client: &RPCClient, tx_hash: [u8; 32]) -> Result<Vec<CellInfo>> {
