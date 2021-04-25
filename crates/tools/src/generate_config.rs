@@ -50,8 +50,17 @@ pub fn generate_config(
 
     // build configuration
     let account_id = 0;
-    let privkey_path = "<private key path>".into();
-    let lock = Default::default();
+    let privkey_path = "../godwoken-test/deployment/secret.key".into();
+    let lock = serde_json::from_str(
+        r#"
+            {
+                "code_hash": "0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8",
+                "hash_type": "type",
+                "args": "0x470dcdc5e44064909650113a274b3b36aecb6dc7"
+             }
+        "#,
+    )
+    .expect("generate default lock script");
 
     let rollup_config = genesis.rollup_config.clone();
     let rollup_type_hash = genesis.rollup_type_hash;
