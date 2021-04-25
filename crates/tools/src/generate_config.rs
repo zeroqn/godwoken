@@ -123,7 +123,7 @@ pub fn generate_config(
         ckb_url,
     };
     let rpc_server = RPCServerConfig {
-        listen: "localhost:8119".to_string(),
+        listen: "127.0.0.1:8119".to_string(),
     };
     let block_producer: Option<BlockProducerConfig> = Some(BlockProducerConfig {
         account_id,
