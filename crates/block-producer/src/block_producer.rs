@@ -79,71 +79,6 @@ fn generate_custodian_cells(
         .collect()
 }
 
-// TODO: able to use unlocked stake cell
-async fn generate_stake_cell(
-    rollup_context: &RollupContext,
-    block: &L2Block,
-    rpc_client: &RPCClient,
-    lock_script: Script,
-) -> Result<(Vec<InputCellInfo>, (CellOutput, Bytes))> {
-    let lock_args = {
-        let owner_lock_hash = lock_script.hash();
-
-        let stake_lock_args = StakeLockArgs::new_builder()
-            .owner_lock_hash(owner_lock_hash.pack())
-            .stake_block_number(block.raw().number())
-            .build();
-
-        let rollup_type_hash = rollup_context.rollup_script_hash.as_slice().iter().cloned();
-        Bytes::from_iter(rollup_type_hash.chain(stake_lock_args.as_slice().iter().cloned()))
-    };
-    let lock = Script::new_builder()
-        .code_hash(rollup_context.rollup_config.stake_script_type_hash())
-        .hash_type(ScriptHashType::Type.into())
-        .args(lock_args.pack())
-        .build();
-
-    let stake_capacity = {
-        let required_staking_capacity = rollup_context
-            .rollup_config
-            .required_staking_capacity()
-            .unpack();
-
-        assert!(lock.as_slice().len() < u64::max_value() as usize);
-        let min_capacity = (8u64 + lock.as_slice().len() as u64) * 100000000;
-
-        if required_staking_capacity <= min_capacity {
-            min_capacity
-        } else {
-            required_staking_capacity
-        }
-    };
-
-    let payment_cells = rpc_client
-        .query_payment_cells(lock_script.clone(), stake_capacity)
-        .await?;
-    if payment_cells.is_empty() {
-        return Err(anyhow!("no cells to generate stake cell"));
-    }
-
-    let input_cells = payment_cells
-        .into_iter()
-        .map(|cell| {
-            let input = CellInput::new_builder()
-                .previous_output(cell.out_point.clone())
-                .build();
-            InputCellInfo { input, cell }
-        })
-        .collect();
-
-    let stake_cell = CellOutput::new_builder()
-        .capacity(stake_capacity.pack())
-        .lock(lock)
-        .build();
-
-    Ok((input_cells, (stake_cell, Bytes::new())))
-}
-
 async fn generate_withdrawal_cells(
     rpc_client: &RPCClient,
     rollup_context: &RollupContext,
@@ -515,27 +450,6 @@ impl BlockProducer {
             unused_transactions.len(),
             unused_withdrawal_requests.len()
         );
-
-        let live_global_state = self
-            .tester
-            .fetch_live_global_state(&self.rpc_client)
-            .await?;
-        if self.tester.claimable_stake_len(&live_global_state) != 0 {
-            if let Err(err) = self
-                .tester
-                .claim_stake(
-                    &self.rpc_client,
-                    &self.wallet,
-                    &self.config,
-                    &self.ckb_genesis_info,
-                    &live_global_state,
-                )
-                .await
-            {
-                println!("claim stake error {:?}", err);
-            }
-            async_std::task::sleep(std::time::Duration::from_secs(5)).await;
-        }
 
         // composit tx
         let rollup_context = self.generator.rollup_context();
