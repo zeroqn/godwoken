@@ -13,7 +13,7 @@ use gw_config::{BlockProducerConfig, WalletConfig};
 use gw_generator::RollupContext;
 use gw_types::{
     core::DepType,
-    packed::{Byte32, CellDep, CellInput, CellOutput, OutPoint, Transaction},
+    packed::{CellDep, CellInput, CellOutput, GlobalState, OutPoint, StakeLockArgs, Transaction},
     prelude::{Pack, Unpack},
 };
 use parking_lot::Mutex;
@@ -21,21 +21,63 @@ use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+pub struct StakeCell {
+    info: InputCellInfo,
+    block_number: u64,
+}
+
+impl StakeCell {
+    pub fn new(info: InputCellInfo, block_number: u64) -> Self {
+        StakeCell { info, block_number }
+    }
+}
+
+pub struct LiveGlobalState {
+    rollup_cell: CellInfo,
+    last_finalized_block_number: u64,
+}
+
+impl LiveGlobalState {
+    pub async fn fetch(rpc_client: &RPCClient) -> Result<Self> {
+        let rollup_cell = rpc_client
+            .query_rollup_cell()
+            .await?
+            .ok_or_else(|| anyhow!("can't find rollup cell"))?;
+
+        let global_state = GlobalState::from_slice(&rollup_cell.data)
+            .map_err(|e| anyhow!("parse live global state"))?;
+        let last_finalized_block_number = global_state.last_finalized_block_number().unpack();
+
+        Ok(LiveGlobalState {
+            rollup_cell,
+            last_finalized_block_number,
+        })
+    }
+}
+
 pub struct Tester {
-    rpc_client: RPCClient,
-    stake_info: Arc<Mutex<Vec<InputCellInfo>>>,
+    stake_cells: Arc<Mutex<Vec<StakeCell>>>,
 }
 
 impl Tester {
-    pub fn new(rpc_client: RPCClient) -> Self {
+    pub fn new() -> Self {
         Tester {
-            rpc_client,
-            stake_info: Default::default(),
+            stake_cells: Default::default(),
         }
     }
 
-    pub fn stake_len(&self) -> usize {
-        self.stake_info.lock().len()
+    pub async fn fetch_live_global_state(&self, rpc_client: &RPCClient) -> Result<LiveGlobalState> {
+        LiveGlobalState::fetch(rpc_client).await
+    }
+
+    pub fn claimable_stake_len(&self, global_state: &LiveGlobalState) -> usize {
+        let latest_finalized_block_number = global_state.last_finalized_block_number;
+
+        let stake_cells = self.stake_cells.lock();
+        stake_cells
+            .iter()
+            .filter(|stake| stake.block_number <= latest_finalized_block_number)
+            .count()
     }
 
     pub fn add_stake(&self, rollup_context: &RollupContext, tx: Transaction) {
@@ -46,6 +88,12 @@ impl Tester {
         {
             None => return,
             Some(output) => output,
+        };
+
+        let stake_block_number = {
+            let args: Bytes = stake_output.lock().args().unpack();
+            let stake_lock_args = StakeLockArgs::new_unchecked(args.slice(32..));
+            stake_lock_args.stake_block_number().unpack()
         };
 
         let out_point = OutPoint::new_builder()
@@ -60,57 +108,67 @@ impl Tester {
             data: output_data.as_bytes(),
         };
         let input = CellInput::new_builder().previous_output(out_point).build();
+        let input_cell = InputCellInfo { input, cell };
 
-        self.stake_info.lock().push(InputCellInfo { input, cell })
+        self.stake_cells
+            .lock()
+            .push(StakeCell::new(input_cell, stake_block_number))
     }
 
     pub async fn claim_stake(
         &self,
+        rpc_client: &RPCClient,
         wallet: &Wallet,
         block_producer_config: &BlockProducerConfig,
         ckb_genesis_info: &CKBGenesisInfo,
+        global_state: &LiveGlobalState,
     ) -> Result<()> {
+        // Deps
         let stake_lock_dep = block_producer_config.stake_cell_lock_dep.clone();
-        let rollup_cell = {
-            let opt_rollup_cell = self.rpc_client.query_rollup_cell().await?;
-            let rollup_cell_info =
-                opt_rollup_cell.ok_or_else(|| anyhow!("can't find rollup cell"))?;
-            // let rollup_cell_type_hash = {
-            //     let opt_rollup_type = rollup_cell_info.output.type_().to_opt();
-            //     let rollup_type = opt_rollup_type.expect("rollup without type script");
-            //
-            //     let hash = ckb_types::packed::Script::from_slice(rollup_type.as_slice())
-            //         .map_err(|e| anyhow!("invalid rollup type script {}", e))?
-            //         .calc_script_hash();
-            //     Byte32::from_slice(hash.as_slice())
-            //         .map_err(|_| anyhow!("invalid rollup type hash"))?
-            // };
+        let rollup_cell = CellDep::new_builder()
+            .out_point(global_state.rollup_cell.out_point.to_owned())
+            .dep_type(DepType::Code.into())
+            .build();
 
-            // We just read rollup data, so DepType is meanless here
-            CellDep::new_builder()
-                .out_point(rollup_cell_info.out_point)
-                .dep_type(DepType::Code.into())
-                .build()
-        };
+        println!(
+            "claim stake rollup type hash {:?}",
+            global_state
+                .rollup_cell
+                .output
+                .type_()
+                .to_opt()
+                .expect("rollup without type")
+                .hash()
+        );
 
         let mut tx_skeleton = TransactionSkeleton::default();
         tx_skeleton.cell_deps_mut().extend(vec![
-            rollup_cell.into(),
+            rollup_cell,
             stake_lock_dep.into(),
             ckb_genesis_info.sighash_dep(),
         ]);
 
         // Inputs
-        let stake_info = { self.stake_info.lock().drain(..).collect::<Vec<_>>() };
-        stake_info
+        let stake_cells = self.claimable_stake(global_state);
+        if stake_cells.is_empty() {
+            return Ok(());
+        }
+
+        stake_cells.iter().for_each(|stake| {
+            println!(
+                "claim stake: {:?} at {}",
+                stake.info.cell, stake.block_number
+            )
+        });
+
+        let stake_capacity: u64 = stake_cells
             .iter()
-            .for_each(|info| println!("claim stake cell: {:?}", info.cell));
-        let stake_capacity: u64 = stake_info
-            .iter()
-            .map(|info| info.cell.output.capacity().unpack())
+            .map(|stake| stake.info.cell.output.capacity().unpack())
             .sum();
-        println!("stake_capacity {}", stake_capacity);
-        tx_skeleton.inputs_mut().extend(stake_info);
+
+        tx_skeleton
+            .inputs_mut()
+            .extend(stake_cells.into_iter().map(|cell| cell.info));
 
         // Output
         let lock = wallet.lock().to_owned();
@@ -122,11 +180,35 @@ impl Tester {
             .outputs_mut()
             .push((claimed_output, Bytes::new()));
 
-        fill_tx_fee(&mut tx_skeleton, &self.rpc_client, lock).await?;
+        fill_tx_fee(&mut tx_skeleton, rpc_client, lock).await?;
         let tx = wallet.sign_tx_skeleton(tx_skeleton)?;
 
-        self.rpc_client.send_transaction(tx).await?;
+        rpc_client.send_transaction(tx).await?;
         Ok(())
+    }
+
+    fn claimable_stake(&self, global_state: &LiveGlobalState) -> Vec<StakeCell> {
+        let latest_finalized_block_number = global_state.last_finalized_block_number;
+        println!(
+            "claimable stake last finalized block number {}",
+            latest_finalized_block_number
+        );
+
+        let mut claimable = vec![];
+        let mut stake_cells = self.stake_cells.lock();
+        let mut i = 0;
+
+        while i != stake_cells.len() {
+            let cell = &stake_cells[i];
+            if cell.block_number <= latest_finalized_block_number {
+                println!("remove stake cell at block number {}", cell.block_number);
+                claimable.push(stake_cells.remove(i));
+            } else {
+                i = i + 1;
+            }
+        }
+
+        claimable
     }
 }
 

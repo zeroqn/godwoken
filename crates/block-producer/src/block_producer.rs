@@ -459,6 +459,27 @@ impl BlockProducer {
             unused_withdrawal_requests.len()
         );
 
+        let live_global_state = self
+            .tester
+            .fetch_live_global_state(&self.rpc_client)
+            .await?;
+        if self.tester.claimable_stake_len(&live_global_state) != 0 {
+            if let Err(err) = self
+                .tester
+                .claim_stake(
+                    &self.rpc_client,
+                    &self.wallet,
+                    &self.config,
+                    &self.ckb_genesis_info,
+                    &live_global_state,
+                )
+                .await
+            {
+                println!("claim stake error {:?}", err);
+            }
+            async_std::task::sleep(std::time::Duration::from_secs(5)).await;
+        }
+
         // composit tx
         let rollup_context = self.generator.rollup_context();
         let tx = complete_tx_skeleton(

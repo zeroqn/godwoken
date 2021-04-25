@@ -127,7 +127,7 @@ fn run() -> Result<()> {
         config
             .block_producer
             .ok_or_else(|| anyhow!("not set block producer"))?,
-        Tester::new(rpc_client),
+        Tester::new(),
     )
     .with_context(|| "init block producer")?;
 
