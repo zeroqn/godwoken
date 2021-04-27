@@ -5,9 +5,9 @@ use async_jsonrpc_client::{HttpClient, Output, Params as ClientParams, Transport
 use ckb_types::prelude::Entity;
 use gw_common::H256;
 use gw_generator::RollupContext;
-use gw_jsonrpc_types::ckb_jsonrpc_types::{self, Uint32};
+use gw_jsonrpc_types::ckb_jsonrpc_types::{self, BlockNumber, Uint32};
 use gw_types::{
-    packed::{CellOutput, OutPoint, Script, Transaction},
+    packed::{Block, CellOutput, OutPoint, Script, Transaction},
     prelude::*,
 };
 use serde::de::DeserializeOwned;
@@ -76,6 +76,20 @@ impl RPCClient {
             return Ok(Some(cell_info));
         }
         Ok(None)
+    }
+
+    pub async fn get_block_by_number(&self, number: u64) -> Result<Block> {
+        let block_number = BlockNumber::from(number);
+        let block: ckb_jsonrpc_types::BlockView = to_result(
+            self.ckb_client
+                .request(
+                    "get_block_by_number",
+                    Some(ClientParams::Array(vec![json!(block_number)])),
+                )
+                .await?,
+        )?;
+        let block: ckb_types::core::BlockView = block.into();
+        Ok(Block::new_unchecked(block.data().as_bytes()))
     }
 
     /// query payment cells, the returned cells should provide at least required_capacity fee,
