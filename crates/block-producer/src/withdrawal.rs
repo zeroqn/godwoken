@@ -47,11 +47,13 @@ pub async fn generate(
                 .capacity
                 .saturating_add(withdrawal.raw().capacity().unpack());
 
-            let sudt_amount = total_amount
-                .sudt
-                .entry(withdrawal.raw().sudt_script_hash().unpack())
-                .or_insert(0u128);
-            *sudt_amount = sudt_amount.saturating_add(withdrawal.raw().amount().unpack());
+            let sudt_script_hash = withdrawal.raw().sudt_script_hash().unpack();
+            if sudt_script_hash != CKB_SUDT_SCRIPT_ARGS {
+                let sudt_amount = total_amount.sudt.entry(sudt_script_hash).or_insert(0u128);
+                *sudt_amount = sudt_amount.saturating_add(withdrawal.raw().amount().unpack());
+            } else {
+                eprintln!("withdrawal request non-zero sudt amount but it's type hash is all zero, ignore this amount");
+            }
 
             total_amount
         },
@@ -92,30 +94,31 @@ pub async fn generate(
             .args(lock_args.pack())
             .build();
 
-        let (type_, data): (ScriptOpt, Bytes) = if req.raw().amount().unpack() != 0 {
-            let fullfilled_sudt_script = &custodian_cells.fullfilled_sudt_script;
-            let sudt_type_hash: [u8; 32] = req.raw().sudt_script_hash().unpack();
+        let sudt_type_hash: [u8; 32] = req.raw().sudt_script_hash().unpack();
+        let (type_, data): (ScriptOpt, Bytes) =
+            if req.raw().amount().unpack() != 0 && sudt_type_hash != CKB_SUDT_SCRIPT_ARGS {
+                let fullfilled_sudt_script = &custodian_cells.fullfilled_sudt_script;
 
-            if !fullfilled_sudt_script.contains_key(&sudt_type_hash) {
-                return Err(anyhow!(
-                    "expected sudt type script {} not found",
-                    sudt_type_hash.pack()
-                ));
-            }
+                if !fullfilled_sudt_script.contains_key(&sudt_type_hash) {
+                    return Err(anyhow!(
+                        "expected sudt type script {} not found",
+                        sudt_type_hash.pack()
+                    ));
+                }
 
-            let sudt_type_script = fullfilled_sudt_script.get(&sudt_type_hash).cloned();
-            (sudt_type_script.pack(), req.raw().amount().as_bytes())
-        } else {
-            (None::<Script>.pack(), Bytes::new())
-        };
+                let sudt_type_script = fullfilled_sudt_script.get(&sudt_type_hash).cloned();
+                (sudt_type_script.pack(), req.raw().amount().as_bytes())
+            } else {
+                (None::<Script>.pack(), Bytes::new())
+            };
 
         let required_capacity = {
-            let size = (8 + lock.as_slice().len() + type_.as_slice().len() + data.len()) as u64;
+            let size = (8 + data.len() + type_.as_slice().len() + lock.as_slice().len()) as u64;
             size * 100000000u64
         };
         if required_capacity > withdrawal_capacity {
             return Err(anyhow!(
-                "{}'s withdrawal capacity {} is smaller than minimal required {}",
+                "{} withdrawal capacity {} is smaller than minimal required {}",
                 req.raw().account_script_hash(),
                 withdrawal_capacity,
                 required_capacity
@@ -244,20 +247,21 @@ fn generate_change_custodian_outputs(
         return Ok(change_outputs);
     }
 
-    let min_change_capacity = (8u64 + custodian_lock_script.as_slice().len() as u64) * 100000000u64;
-    if collected.capacity < used_capacity.saturating_add(min_change_capacity) {
+    let min_ckb_change_capacity =
+        (8u64 + custodian_lock_script.as_slice().len() as u64) * 100000000u64;
+    if collected.capacity < used_capacity.saturating_add(min_ckb_change_capacity) {
         return Err(anyhow!(
             "no enouth capacity left to generate pure ckb change custodian cell"
         ));
     }
 
-    let change_capacity = collected.capacity.saturating_sub(used_capacity);
-    let change_custodian_output = CellOutput::new_builder()
-        .capacity(change_capacity.pack())
+    let ckb_change_capacity = collected.capacity.saturating_sub(used_capacity);
+    let ckb_change_custodian_output = CellOutput::new_builder()
+        .capacity(ckb_change_capacity.pack())
         .lock(custodian_lock_script)
         .build();
 
-    change_outputs.push((change_custodian_output, Bytes::new()));
+    change_outputs.push((ckb_change_custodian_output, Bytes::new()));
     Ok(change_outputs)
 }
 
