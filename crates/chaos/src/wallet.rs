@@ -14,7 +14,7 @@ use crate::transaction_skeleton::TransactionSkeleton;
 pub struct Wallet {
     privkey: Privkey,
     lock: Script,
-    layer2_lock: Script,
+    // layer2_lock: Script,
 }
 
 impl Wallet {
@@ -60,9 +60,7 @@ impl Wallet {
         &self.lock
     }
 
-    pub fn layer2_lock(&selif) -> &Script {
-
-    }
+    // pub fn layer2_lock(&self) -> &Script {}
 
     // sign message
     pub fn sign_message(&self, msg: [u8; 32]) -> Result<[u8; 65]> {
