@@ -30,10 +30,12 @@ use gw_types::{
     prelude::*,
 };
 use parking_lot::Mutex;
+
 use std::{
     collections::{HashMap, HashSet},
     convert::TryFrom,
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 fn generate_custodian_cells(
@@ -355,9 +357,11 @@ impl BlockProducer {
     }
 
     pub async fn produce_next_block(&self) -> Result<()> {
-        // TODO fix the default value
-        let block_producer_id = 0;
-        let timestamp = 0;
+        let block_producer_id = self.config.account_id;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("timestamp")
+            .as_millis() as u64;
 
         // get deposit cells
         let deposit_cells = self.rpc_client.query_deposit_cells().await?;
