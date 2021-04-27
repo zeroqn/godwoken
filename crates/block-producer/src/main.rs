@@ -122,7 +122,7 @@ fn run() -> Result<()> {
         generator,
         chain,
         mem_pool,
-        rpc_client.clone(),
+        rpc_client,
         ckb_genesis_info,
         config
             .block_producer
