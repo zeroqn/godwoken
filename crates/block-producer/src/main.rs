@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use async_jsonrpc_client::HttpClient;
 use futures::{select, FutureExt};
 use gw_block_producer::{
-    block_producer::BlockProducer, poller::ChainUpdater, rpc_client::RPCClient, tester::Tester,
+    block_producer::BlockProducer, poller::ChainUpdater, rpc_client::RPCClient,
     utils::CKBGenesisInfo,
 };
 use gw_chain::chain::Chain;
@@ -127,7 +127,6 @@ fn run() -> Result<()> {
         config
             .block_producer
             .ok_or_else(|| anyhow!("not set block producer"))?,
-        Tester::new(),
     )
     .with_context(|| "init block producer")?;
 
