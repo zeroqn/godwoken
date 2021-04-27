@@ -55,7 +55,8 @@ pub async fn generate(
                 let sudt_amount = total_amount.sudt.entry(sudt_script_hash).or_insert(0u128);
                 *sudt_amount = sudt_amount.saturating_add(withdrawal.raw().amount().unpack());
             } else {
-                eprintln!("withdrawal request non-zero sudt amount but it's type hash is all zero, ignore this amount");
+                let account = withdrawal.raw().account_script_hash();
+                eprintln!("{} withdrawal request non-zero sudt amount but it's type hash is all zero, ignore this amount", account);
             }
 
             total_amount
