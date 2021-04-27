@@ -1924,6 +1924,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "gw-chaos"
+version = "0.1.0"
+
+[[package]]
 name = "gw-common"
 version = "0.1.0"
 dependencies = [
