@@ -12,14 +12,17 @@ use gw_types::{
     bytes::Bytes,
     core::ScriptHashType,
     packed::{
-        CellDep, CellInput, CellOutput, CustodianLockArgs, CustodianLockArgsReader, GlobalState,
-        L2Block, OutPoint, Script, ScriptOpt, Uint128, WithdrawalLockArgs, WithdrawalRequest,
+        CellDep, CellInput, CellOutput, CustodianLockArgs, CustodianLockArgsReader,
+        DepositionLockArgs, GlobalState, L2Block, OutPoint, RollupAction, RollupActionUnion,
+        Script, ScriptOpt, Uint128, UnlockWithdrawalViaRevert, UnlockWithdrawalWitness,
+        UnlockWithdrawalWitnessUnion, WithdrawalLockArgs, WithdrawalLockArgsReader,
+        WithdrawalRequest, WitnessArgs,
     },
     prelude::*,
 };
 use serde_json::json;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct GeneratedWithdrawals {
     pub deps: Vec<CellDep>,
@@ -162,6 +165,131 @@ pub async fn generate(
     };
 
     Ok(generated_withdrawals)
+}
+
+pub struct RevertedWithdrawals {
+    pub deps: Vec<CellDep>,
+    pub inputs: Vec<InputCellInfo>,
+    pub witness_args: Vec<WitnessArgs>,
+    pub outputs: Vec<(CellOutput, Bytes)>,
+}
+
+impl RevertedWithdrawals {
+    pub fn empty() -> Self {
+        RevertedWithdrawals {
+            deps: Default::default(),
+            inputs: Default::default(),
+            outputs: Default::default(),
+            witness_args: Default::default(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.outputs.is_empty()
+    }
+}
+
+pub async fn revert(
+    rollup_action: &RollupAction,
+    rollup_context: &RollupContext,
+    block_producer_config: &BlockProducerConfig,
+    rpc_client: &RPCClient,
+) -> Result<RevertedWithdrawals> {
+    let submit_block = match rollup_action.to_enum() {
+        RollupActionUnion::RollupSubmitBlock(submit_block) => submit_block,
+        _ => return Ok(RevertedWithdrawals::empty()),
+    };
+
+    if submit_block.reverted_block_hashes().is_empty() {
+        return Ok(RevertedWithdrawals::empty());
+    }
+
+    let reverted_block_hashes: HashSet<[u8; 32]> = submit_block
+        .reverted_block_hashes()
+        .into_iter()
+        .map(|h| h.unpack())
+        .collect();
+
+    let reverted_withdrawal_cells =
+        query_reverted_withdrawal_cells(rpc_client, &reverted_block_hashes).await?;
+    if reverted_withdrawal_cells.is_empty() {
+        return Ok(RevertedWithdrawals::empty());
+    }
+
+    let mut withdrawal_inputs = vec![];
+    let mut withdrawal_witness = vec![];
+    let mut custodian_outputs = vec![];
+
+    // NOTE: We use idx to create different custodian lock hash for every reverted withdrawal
+    // input. Withdrawal lock use custodian lock hash to index corresponding custodian output.
+    let rollup_type_hash = rollup_context.rollup_script_hash.as_slice().iter();
+    for (idx, withdrawal) in reverted_withdrawal_cells.into_iter().enumerate() {
+        let custodian_lock = {
+            let deposition_lock_args = DepositionLockArgs::new_builder()
+                .cancel_timeout((idx as u64).pack())
+                .build();
+
+            let custodian_lock_args = CustodianLockArgs::new_builder()
+                .deposition_lock_args(deposition_lock_args)
+                .build();
+
+            let lock_args: Bytes = rollup_type_hash
+                .clone()
+                .chain(custodian_lock_args.as_slice().iter())
+                .cloned()
+                .collect();
+
+            Script::new_builder()
+                .code_hash(rollup_context.rollup_config.custodian_script_type_hash())
+                .hash_type(ScriptHashType::Type.into())
+                .args(lock_args.pack())
+                .build()
+        };
+
+        let custodian_output = {
+            let output_builder = withdrawal.output.clone().as_builder();
+            output_builder.lock(custodian_lock.clone()).build()
+        };
+
+        let withdrawal_input = {
+            let input = CellInput::new_builder()
+                .previous_output(withdrawal.out_point.clone())
+                .build();
+
+            InputCellInfo {
+                input,
+                cell: withdrawal.clone(),
+            }
+        };
+
+        let unlock_withdrawal_witness = {
+            let unlock_withdrawal_via_revert = UnlockWithdrawalViaRevert::new_builder()
+                .custodian_lock_hash(custodian_lock.hash().pack())
+                .build();
+
+            UnlockWithdrawalWitness::new_builder()
+                .set(UnlockWithdrawalWitnessUnion::UnlockWithdrawalViaRevert(
+                    unlock_withdrawal_via_revert,
+                ))
+                .build()
+        };
+        let withdrawal_witness_args = WitnessArgs::new_builder()
+            .lock(Some(unlock_withdrawal_witness.as_bytes()).pack())
+            .build();
+
+        withdrawal_inputs.push(withdrawal_input);
+        withdrawal_witness.push(withdrawal_witness_args);
+        custodian_outputs.push((custodian_output, withdrawal.data.clone()));
+    }
+
+    let withdrawal_lock_dep = block_producer_config.withdrawal_cell_lock_dep.clone();
+
+    Ok(RevertedWithdrawals {
+        deps: vec![withdrawal_lock_dep.into()],
+        inputs: withdrawal_inputs,
+        outputs: custodian_outputs,
+        witness_args: withdrawal_witness,
+    })
 }
 
 fn generate_change_custodian_outputs(
@@ -418,6 +546,86 @@ async fn query_finalized_custodian_cells(
             };
 
             collected.cells_info.push(info);
+        }
+    }
+
+    Ok(collected)
+}
+
+async fn query_reverted_withdrawal_cells(
+    rpc_client: &RPCClient,
+    reverted_block_hashes: &HashSet<[u8; 32]>,
+) -> Result<Vec<CellInfo>> {
+    let rollup_context = &rpc_client.rollup_context;
+
+    let withdrawal_lock = Script::new_builder()
+        .code_hash(rollup_context.rollup_config.withdrawal_script_type_hash())
+        .hash_type(ScriptHashType::Type.into())
+        .args(rollup_context.rollup_script_hash.as_slice().pack())
+        .build();
+
+    let search_key = SearchKey {
+        script: ckb_types::packed::Script::new_unchecked(withdrawal_lock.as_bytes()).into(),
+        script_type: ScriptType::Lock,
+        filter: None,
+    };
+    let order = Order::Desc;
+    let limit = Uint32::from(DEFAULT_QUERY_LIMIT as u32);
+
+    let mut collected = vec![];
+    let mut cursor = None;
+
+    while collected.is_empty() {
+        let cells: Pagination<Cell> = to_result(
+            rpc_client
+                .indexer_client
+                .request(
+                    "get_cells",
+                    Some(ClientParams::Array(vec![
+                        json!(search_key),
+                        json!(order),
+                        json!(limit),
+                        json!(cursor),
+                    ])),
+                )
+                .await?,
+        )?;
+
+        if cells.last_cursor.is_empty() {
+            return Ok(vec![]);
+        }
+        cursor = Some(cells.last_cursor);
+
+        for cell in cells.objects.into_iter() {
+            let args = cell.output.lock.args.clone().into_bytes();
+            let withdrawal_lock_args = match WithdrawalLockArgsReader::verify(&args[32..], false) {
+                Ok(()) => WithdrawalLockArgs::new_unchecked(args.slice(32..)),
+                Err(_) => continue,
+            };
+
+            let withdrawal_block_hash: [u8; 32] =
+                withdrawal_lock_args.withdrawal_block_hash().unpack();
+            if !reverted_block_hashes.contains(&withdrawal_block_hash) {
+                continue;
+            }
+
+            let out_point = {
+                let out_point: ckb_types::packed::OutPoint = cell.out_point.into();
+                OutPoint::new_unchecked(out_point.as_bytes())
+            };
+
+            let output = {
+                let output: ckb_types::packed::CellOutput = cell.output.into();
+                CellOutput::new_unchecked(output.as_bytes())
+            };
+
+            let info = CellInfo {
+                out_point,
+                output,
+                data: cell.output_data.into_bytes(),
+            };
+
+            collected.push(info);
         }
     }
 
