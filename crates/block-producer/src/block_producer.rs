@@ -295,6 +295,25 @@ async fn complete_tx_skeleton(
         .outputs_mut()
         .extend(generated_withdrawal_cells.outputs);
 
+    // reverted withdrawal cells
+    // let reverted_withdrawals = crate::withdrawal::revert(
+    //     &rollup_action,
+    //     rollup_context,
+    //     &block_producer_config,
+    //     rpc_client,
+    // )
+    // .await?;
+    // tx_skeleton
+    //     .cell_deps_mut()
+    //     .extend(reverted_withdrawals.deps);
+    // tx_skeleton.inputs_mut().extend(reverted_withdrawals.inputs);
+    // tx_skeleton
+    //     .witnesses_mut()
+    //     .extend(reverted_withdrawals.witness_args);
+    // tx_skeleton
+    //     .outputs_mut()
+    //     .extend(reverted_withdrawals.outputs);
+
     // tx fee cell
     fill_tx_fee(&mut tx_skeleton, rpc_client, wallet.lock().to_owned()).await?;
 
