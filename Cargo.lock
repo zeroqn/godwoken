@@ -1926,6 +1926,23 @@ dependencies = [
 [[package]]
 name = "gw-chaos"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-jsonrpc-client",
+ "async-std",
+ "ckb-fixed-hash",
+ "ckb-types",
+ "gw-chain",
+ "gw-common",
+ "gw-config",
+ "gw-generator",
+ "gw-jsonrpc-types",
+ "gw-mem-pool",
+ "gw-store",
+ "gw-types",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "gw-common"
