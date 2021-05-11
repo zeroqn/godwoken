@@ -648,7 +648,7 @@ impl RPCClient {
         let custodian_lock = Script::new_builder()
             .code_hash(rollup_context.rollup_config.custodian_script_type_hash())
             .hash_type(ScriptHashType::Type.into())
-            .args(rollup_context.rollup_script_hash.as_slice().pack())
+            .args(Bytes::new().pack())
             .build();
 
         let search_key = SearchKey {
