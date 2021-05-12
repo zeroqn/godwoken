@@ -403,7 +403,7 @@ impl RPCClient {
     pub async fn query_deposit_cells(&self, count: usize) -> Result<Vec<DepositInfo>> {
         const BLOCKS_TO_SEARCH: u64 = 2000;
 
-        let tip_number = self.get_tip().await?.number().unpack();
+        // let tip_number = self.get_tip().await?.number().unpack();
         let mut deposit_infos = Vec::new();
 
         let rollup_type_hash: Bytes = self
@@ -432,7 +432,8 @@ impl RPCClient {
                 output_data_len_range: None,
                 output_capacity_range: None,
                 block_range: Some([
-                    BlockNumber::from(tip_number.saturating_sub(BLOCKS_TO_SEARCH)),
+                    // BlockNumber::from(tip_number.saturating_sub(BLOCKS_TO_SEARCH)),
+                    BlockNumber::from(BLOCKS_TO_SEARCH),
                     BlockNumber::from(u64::max_value()),
                 ]),
             }),

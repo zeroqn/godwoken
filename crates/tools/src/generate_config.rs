@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::path::Path;
+
 use crate::deploy_genesis::get_secp_data;
 use crate::setup::get_wallet_info;
 use crate::types::{
@@ -7,13 +10,12 @@ use anyhow::{anyhow, Result};
 use ckb_sdk::HttpRpcClient;
 use ckb_types::prelude::{Builder, Entity};
 use gw_config::{
-    BackendConfig, BlockProducerConfig, ChainConfig, ChallengerConfig, Config, GenesisConfig,
-    NodeMode, RPCClientConfig, RPCServerConfig, StoreConfig, WalletConfig, Web3IndexerConfig,
+    AllowedScriptsConfig, BackendConfig, BlockProducerConfig, ChainConfig, ChallengerConfig,
+    Config, DebugBurnConfig, GenesisConfig, NodeMode, RPCClientConfig, RPCServerConfig,
+    StoreConfig, WalletConfig, Web3IndexerConfig,
 };
 use gw_jsonrpc_types::godwoken::L2BlockCommittedInfo;
 use gw_types::{core::ScriptHashType, packed::Script, prelude::*};
-use std::collections::HashMap;
-use std::path::Path;
 
 pub struct GenerateNodeConfigArgs<'a> {
     pub rollup_result: &'a RollupDeploymentResult,
@@ -37,9 +39,9 @@ pub fn generate_node_config(args: GenerateNodeConfigArgs) -> Result<Config> {
         indexer_url,
         database_url,
         build_scripts_result,
-        server_url,
+        server_url: _,
         user_rollup_config,
-        node_mode,
+        node_mode: _,
     } = args;
 
     let mut rpc_client = HttpRpcClient::new(ckb_url.to_string());
@@ -62,6 +64,7 @@ pub fn generate_node_config(args: GenerateNodeConfigArgs) -> Result<Config> {
 
     // build configuration
     let account_id = 0;
+
     let node_wallet_info = get_wallet_info(privkey_path);
     let code_hash: [u8; 32] = {
         let mut hash = [0u8; 32];
@@ -78,8 +81,7 @@ pub fn generate_node_config(args: GenerateNodeConfigArgs) -> Result<Config> {
         .code_hash(code_hash.pack())
         .hash_type(ScriptHashType::Type.into())
         .args(args.pack())
-        .build()
-        .into();
+        .build();
 
     let rollup_config = rollup_result.rollup_config.clone();
     let rollup_type_hash = rollup_result.rollup_type_hash.clone();
@@ -141,10 +143,38 @@ pub fn generate_node_config(args: GenerateNodeConfigArgs) -> Result<Config> {
     };
 
     // TODO: automatic generation
+    // let _l1_sudt_type_dep = {
+    //     let dep: ckb_types::packed::CellDep = user_rollup_config.l1_sudt_cell_dep.clone().into();
+    //     gw_types::packed::CellDep::new_unchecked(dep.as_bytes()).into()
+    // };
+
     let l1_sudt_type_dep = {
-        let dep: ckb_types::packed::CellDep = user_rollup_config.l1_sudt_cell_dep.clone().into();
-        let dep = gw_types::packed::CellDep::new_unchecked(dep.as_bytes());
-        dep.into()
+        let dep: ckb_types::packed::CellDep =
+            scripts_deployment.always_success.cell_dep.clone().into();
+        gw_types::packed::CellDep::new_unchecked(dep.as_bytes()).into()
+    };
+    let l1_sudt_type_script_hash = scripts_deployment.always_success.script_type_hash.clone();
+    let l1_sudt_script = gw_jsonrpc_types::blockchain::Script {
+        code_hash: l1_sudt_type_script_hash,
+        hash_type: gw_jsonrpc_types::blockchain::ScriptHashType::Type,
+        args: gw_jsonrpc_types::ckb_jsonrpc_types::JsonBytes::from_vec(lock.hash().to_vec()),
+    };
+
+    let debug_burn_lock = gw_jsonrpc_types::blockchain::Script {
+        code_hash: ckb_fixed_hash::H256::default(),
+        hash_type: gw_jsonrpc_types::blockchain::ScriptHashType::Data,
+        args: gw_jsonrpc_types::ckb_jsonrpc_types::JsonBytes::default(),
+    };
+    let debug_burn_config = DebugBurnConfig {
+        burn_lock: debug_burn_lock.clone(),
+        burn_lock_dep: Default::default(),
+    };
+
+    let rewards_lock_type_script_hash = scripts_deployment.always_success.script_type_hash.clone();
+    let rewards_lock = gw_jsonrpc_types::blockchain::Script {
+        code_hash: rewards_lock_type_script_hash,
+        hash_type: gw_jsonrpc_types::blockchain::ScriptHashType::Type,
+        args: gw_jsonrpc_types::ckb_jsonrpc_types::JsonBytes::default(),
     };
 
     // Allowed eoa script deps
@@ -216,10 +246,31 @@ pub fn generate_node_config(args: GenerateNodeConfigArgs) -> Result<Config> {
             lock.into()
         },
     };
+    let challenger_config = ChallengerConfig {
+        rewards_receiver_lock: rewards_lock,
+        burn_lock: debug_burn_lock,
+    };
+
+    let allowed_scripts_config: AllowedScriptsConfig = {
+        let eth_account_lock_hash = scripts_deployment.eth_account_lock.script_type_hash.clone();
+        let mut script_deps = HashMap::new();
+
+        let eth_account_lock_dep = {
+            let dep: ckb_types::packed::CellDep =
+                scripts_deployment.eth_account_lock.cell_dep.clone().into();
+            gw_types::packed::CellDep::new_unchecked(dep.as_bytes()).into()
+        };
+        script_deps.insert(eth_account_lock_hash.clone(), eth_account_lock_dep);
+
+        AllowedScriptsConfig {
+            eth_account_lock_hash,
+            script_deps,
+        }
+    };
 
     let wallet_config: WalletConfig = WalletConfig {
         privkey_path: privkey_path.into(),
-        lock,
+        lock: lock.into(),
     };
 
     let backends: Vec<BackendConfig> = vec![
@@ -268,7 +319,10 @@ pub fn generate_node_config(args: GenerateNodeConfigArgs) -> Result<Config> {
         indexer_url,
         ckb_url,
     };
-    let rpc_server = RPCServerConfig { listen: server_url };
+    // let rpc_server = RPCServerConfig { listen: server_url };
+    let rpc_server = RPCServerConfig {
+        listen: "127.0.0.1:8119".to_string(),
+    };
     let block_producer: Option<BlockProducerConfig> = Some(BlockProducerConfig {
         account_id,
         // cell deps
@@ -285,6 +339,9 @@ pub fn generate_node_config(args: GenerateNodeConfigArgs) -> Result<Config> {
         allowed_eoa_deps,
         allowed_contract_deps,
         challenger_config,
+        debug_burn_config,
+        allowed_scripts_config,
+        l1_sudt_script,
         wallet_config,
     });
     let genesis: GenesisConfig = GenesisConfig {
@@ -321,11 +378,11 @@ pub fn generate_node_config(args: GenerateNodeConfigArgs) -> Result<Config> {
         rpc: Default::default(),
         block_producer,
         web3_indexer,
-        node_mode,
+        node_mode: NodeMode::FullNode,
         debug: Default::default(),
-        offchain_validator: Default::default(),
+        offchain_validator: Some(Default::default()),
         mem_pool: Default::default(),
-        db_block_validator: Default::default(),
+        db_block_validator: Some(Default::default()),
         store,
     };
 

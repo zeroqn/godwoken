@@ -19,7 +19,7 @@ use ckb_types::{
         BlockView, Capacity, DepType, EpochNumberWithFraction, ScriptHashType, TransactionBuilder,
         TransactionView,
     },
-    packed as ckb_packed,
+    packed::{self as ckb_packed, Script},
     prelude::Builder as CKBBuilder,
     prelude::Pack as CKBPack,
     prelude::Unpack as CKBUnpack,
@@ -297,8 +297,19 @@ pub fn deploy_rollup_cell(args: DeployRollupCellArgs) -> Result<RollupDeployment
     allowed_eoa_type_hashes.dedup();
 
     // composite rollup config
+    /*
+     * Use always success to build l1_sudt_script_type_hash and burn lock
+     */
+    let l1_sudt_script_type_hash: H256 = scripts_result.always_success.script_type_hash.clone();
+
+    let burn_lock_script = Script::new_builder()
+        .hash_type(ScriptHashType::Data.into())
+        .build();
+    let burn_lock_script_hash: [u8; 32] = burn_lock_script.calc_script_hash().unpack();
+
     let rollup_config = RollupConfig::new_builder()
         .l1_sudt_script_type_hash(GwPack::pack(&user_rollup_config.l1_sudt_script_type_hash))
+        .l1_sudt_script_type_hash(GwPack::pack(&l1_sudt_script_type_hash)) // Override with our always success version
         .custodian_script_type_hash(GwPack::pack(
             &scripts_result.custodian_lock.script_type_hash,
         ))
@@ -314,6 +325,7 @@ pub fn deploy_rollup_cell(args: DeployRollupCellArgs) -> Result<RollupDeployment
             &scripts_result.l2_sudt_validator.script_type_hash,
         ))
         .burn_lock_hash(GwPack::pack(&burn_lock_hash))
+        .burn_lock_hash(GwPack::pack(&burn_lock_script_hash)) // Override with our alwayws success version
         .required_staking_capacity(GwPack::pack(&user_rollup_config.required_staking_capacity))
         .challenge_maturity_blocks(GwPack::pack(&user_rollup_config.challenge_maturity_blocks))
         .finality_blocks(GwPack::pack(&user_rollup_config.finality_blocks))

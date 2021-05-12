@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use ckb_crypto::secp::Privkey;
+use ckb_crypto::secp::{Privkey, SECP256K1};
 use faster_hex::hex_decode;
 use gw_common::blake2b::new_blake2b;
 use gw_config::WalletConfig;
@@ -8,32 +8,50 @@ use gw_types::{
     packed::{Script, Transaction},
     prelude::{Entity, Unpack},
 };
+use sha3::{Digest, Keccak256};
 
 use crate::transaction_skeleton::TransactionSkeleton;
 
 pub struct Wallet {
     privkey: Privkey,
     lock: Script,
+    eth_address: [u8; 20],
 }
 
 impl Wallet {
-    pub fn new(privkey: Privkey, lock: Script) -> Self {
-        Wallet { privkey, lock }
-    }
-
     pub fn from_config(config: &WalletConfig) -> Result<Self> {
         let lock = config.lock.clone().into();
-        let privkey = {
+        let privkey_raw = {
             let content = std::fs::read_to_string(&config.privkey_path)
                 .with_context(|| "read wallet privkey")?;
             let content = content.trim_start_matches("0x").trim();
             assert_eq!(content.as_bytes().len(), 64, "invalid privkey length");
             let mut decoded = [0u8; 32];
             hex_decode(content.as_bytes(), &mut decoded)?;
-            Privkey::from_slice(&decoded)
+            decoded
         };
-        let wallet = Self::new(privkey, lock);
+        let privkey = Privkey::from_slice(&privkey_raw);
+        let eth_address = {
+            let privkey = secp256k1::SecretKey::from_slice(&privkey_raw)?;
+            let pubkey = secp256k1::PublicKey::from_secret_key(&SECP256K1, &privkey);
+
+            let mut hasher = Keccak256::new();
+            hasher.update(&pubkey.serialize_uncompressed()[1..]);
+            let buf = hasher.finalize();
+            let mut pubkey_hash = [0u8; 20];
+            pubkey_hash.copy_from_slice(&buf[12..]);
+            pubkey_hash
+        };
+        let wallet = Wallet {
+            privkey,
+            lock,
+            eth_address,
+        };
         Ok(wallet)
+    }
+
+    pub fn eth_address(&self) -> [u8; 20] {
+        self.eth_address
     }
 
     pub fn lock_script(&self) -> &Script {

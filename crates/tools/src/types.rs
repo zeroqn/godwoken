@@ -77,6 +77,7 @@ pub struct ScriptsDeploymentResult {
     pub polyjuice_validator: DeployItem,
     pub state_validator_lock: DeployItem,
     pub poa_state: DeployItem,
+    pub always_success: DeployItem,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug)]
@@ -102,6 +103,8 @@ pub struct Programs {
     pub state_validator: PathBuf,
     // path: godwoken-scripts/c/build/sudt-validator
     pub l2_sudt_validator: PathBuf,
+    // path: godwoken-scripts/build/release/always-success
+    pub always_success: PathBuf,
 
     // path: godwoken-scripts/c/build/account_locks/eth-account-lock
     pub eth_account_lock: PathBuf,

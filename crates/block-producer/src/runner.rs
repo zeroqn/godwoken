@@ -1,6 +1,6 @@
 use crate::{
     block_producer::BlockProducer, challenger::Challenger, cleaner::Cleaner, poller::ChainUpdater,
-    test_mode_control::TestModeControl, types::ChainEvent,
+    test_bot::TestBot, test_mode_control::TestModeControl, types::ChainEvent,
 };
 use anyhow::{anyhow, Context, Result};
 use async_jsonrpc_client::HttpClient;
@@ -54,6 +54,7 @@ const DEFAULT_RUNTIME_THREADS: usize = 4;
 
 async fn poll_loop(
     rpc_client: RPCClient,
+    test_bot: Option<TestBot>,
     chain_updater: ChainUpdater,
     block_producer: Option<BlockProducer>,
     challenger: Option<Challenger>,
@@ -62,6 +63,7 @@ async fn poll_loop(
 ) -> Result<()> {
     struct Inner {
         chain_updater: ChainUpdater,
+        test_bot: Option<TestBot>,
         block_producer: Option<BlockProducer>,
         challenger: Option<Challenger>,
         cleaner: Option<Arc<Cleaner>>,
@@ -70,6 +72,7 @@ async fn poll_loop(
     let inner = Arc::new(smol::lock::Mutex::new(Inner {
         chain_updater,
         challenger,
+        test_bot,
         block_producer,
         cleaner,
     }));
@@ -85,11 +88,11 @@ async fn poll_loop(
             let raw_header = block.header().raw();
             let event = if raw_header.parent_hash().as_slice() == tip_hash.as_slice() {
                 // received new layer1 block
-                log::info!(
+                /* log::info!(
                     "received new layer1 block {}, {}",
                     tip_number,
                     hex::encode(tip_hash.as_slice())
-                );
+                ); */
                 ChainEvent::NewBlock {
                     block: block.clone(),
                 }
@@ -135,6 +138,16 @@ async fn poll_loop(
                             err
                         )
                     })?;
+            }
+
+            if let Some(ref mut test_bot) = inner.test_bot {
+                if let Err(err) = smol::block_on(test_bot.handle_event(&event)) {
+                    log::error!(
+                        "Error occured when polling test bot, event: {:?}, error: {}",
+                        event,
+                        err
+                    );
+                }
             }
 
             if let Some(ref mut block_producer) = inner.block_producer {
@@ -528,8 +541,15 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
         web3_indexer,
     );
 
-    let (block_producer, challenger, test_mode_control, cleaner) = match config.node_mode {
-        NodeMode::ReadOnly => (None, None, None, None),
+    let ckb_genesis_info = {
+        let ckb_genesis = smol::block_on(async { rpc_client.get_block_by_number(0).await })?
+            .ok_or_else(|| anyhow!("can't found CKB genesis block"))?;
+        CKBGenesisInfo::from_block(&ckb_genesis)?
+    };
+
+    let (block_producer, challenger, test_mode_control, cleaner, test_bot) = match config.node_mode
+    {
+        NodeMode::ReadOnly => (None, None, None, None, None),
         mode => {
             let block_producer_config = config
                 .block_producer
@@ -540,12 +560,13 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
                 .ok_or_else(|| anyhow!("mem-pool must be enabled in mode: {:?}", mode))?;
             let wallet =
                 wallet.ok_or_else(|| anyhow!("wallet must be enabled in mode: {:?}", mode))?;
-            let poa = poa.ok_or_else(|| anyhow!("poa must be enabled in mode: {:?}", mode))?;
+            let poa = poa.ok_or_else(|| anyhow!("poa must be enabled in mode: {:?}, mode"))?;
             let offchain_mock_context = {
                 let ctx = offchain_mock_context.clone();
                 let msg = "offchain mock require block producer config, wallet and poa in mode: ";
                 ctx.ok_or_else(|| anyhow!("{} {:?}", msg, mode))?
             };
+
             let tests_control = if let NodeMode::Test = config.node_mode {
                 Some(TestModeControl::new(
                     rpc_client.clone(),
@@ -555,6 +576,21 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
             } else {
                 None
             };
+
+            let mem_pool_provider =
+                DefaultMemPoolProvider::new(rpc_client.clone(), Arc::clone(&poa), store.clone());
+            let test_bot = TestBot::create(
+                store.clone(),
+                mem_pool.clone(),
+                Box::new(mem_pool_provider),
+                rollup_context.clone(),
+                rpc_client.clone(),
+                config
+                    .block_producer
+                    .clone()
+                    .ok_or_else(|| anyhow!("not set block producer"))?,
+                ckb_genesis_info.clone(),
+            )?;
 
             let cleaner = Arc::new(Cleaner::new(
                 rpc_client.clone(),
@@ -601,6 +637,7 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
                 Some(challenger),
                 tests_control,
                 Some(cleaner),
+                Some(test_bot),
             )
         }
     };
@@ -659,6 +696,7 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
         async move {
             if let Err(err) = poll_loop(
                 rpc_client,
+                test_bot,
                 chain_updater,
                 block_producer,
                 challenger,

@@ -819,6 +819,13 @@ fn run_cli() -> Result<()> {
                     let content = toml::to_string_pretty(&config).unwrap();
                     std::fs::write(output_path, content).unwrap();
                     log::info!("Generate file {:?}", output_path);
+
+                    let json_output_content =
+                        serde_json::to_string_pretty(&config).expect("serde json to string pretry");
+                    let mut json_output_path = std::path::PathBuf::from(output_path);
+                    json_output_path.set_extension("json");
+                    std::fs::write(&json_output_path, json_output_content.as_bytes()).unwrap();
+                    log::info!("Generate file {:?}", json_output_path);
                 }
                 Err(err) => {
                     log::error!("Generate config error: {}", err);

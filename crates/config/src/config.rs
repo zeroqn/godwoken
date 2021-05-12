@@ -90,6 +90,18 @@ pub struct ChallengerConfig {
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DebugBurnConfig {
+    pub burn_lock: Script,
+    pub burn_lock_dep: CellDep,
+}
+
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AllowedScriptsConfig {
+    pub eth_account_lock_hash: H256,
+    pub script_deps: HashMap<H256, CellDep>,
+}
+
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BlockProducerConfig {
     pub account_id: u32,
     // cell deps
@@ -106,6 +118,9 @@ pub struct BlockProducerConfig {
     pub allowed_eoa_deps: HashMap<H256, CellDep>,
     pub allowed_contract_deps: HashMap<H256, CellDep>,
     pub challenger_config: ChallengerConfig,
+    pub debug_burn_config: DebugBurnConfig,
+    pub allowed_scripts_config: AllowedScriptsConfig,
+    pub l1_sudt_script: Script,
     pub wallet_config: WalletConfig,
 }
 

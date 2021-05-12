@@ -311,6 +311,7 @@ fn generate_script_deploy_config(
         polyjuice_validator: get_path("polyjuice_validator"),
         state_validator_lock: get_path("state_validator_lock"),
         poa_state: get_path("poa_state"),
+        always_success: get_path("always_success"),
     };
     let build_scripts_result = BuildScriptsResult {
         programs,

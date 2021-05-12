@@ -142,6 +142,7 @@ pub fn deploy_scripts(
         &scripts_result.programs.polyjuice_validator,
         &scripts_result.programs.state_validator_lock,
         &scripts_result.programs.poa_state,
+        &scripts_result.programs.always_success,
     ] {
         match fs::metadata(path).map_err(|err| err.to_string()) {
             Ok(metadata) => {
@@ -250,6 +251,13 @@ pub fn deploy_scripts(
         &target_lock,
         &target_address,
     )?;
+    let always_success = deploy_program(
+        privkey_path,
+        &mut rpc_client,
+        &scripts_result.programs.poa_state,
+        &target_lock,
+        &target_address,
+    )?;
     let deployment_result = ScriptsDeploymentResult {
         custodian_lock,
         deposit_lock,
@@ -264,6 +272,7 @@ pub fn deploy_scripts(
         polyjuice_validator,
         state_validator_lock,
         poa_state,
+        always_success,
     };
     Ok(deployment_result)
 }

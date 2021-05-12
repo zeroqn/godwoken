@@ -188,7 +188,13 @@ pub fn setup(args: SetupArgs<'_>) {
             let config = generate_node_config(args).expect("generate_config");
             let output_content =
                 toml::to_string_pretty(&config).expect("serde toml to string pretty");
-            fs::write(output_file_path, output_content.as_bytes()).unwrap();
+            fs::write(&output_file_path, output_content.as_bytes()).unwrap();
+
+            let json_output_content =
+                serde_json::to_string_pretty(&config).expect("serde json to string pretry");
+            let mut json_output_path = std::path::PathBuf::from(&output_file_path);
+            json_output_path.set_extension("json");
+            fs::write(json_output_path, json_output_content.as_bytes()).unwrap();
         });
 
     log::info!("Finish");

@@ -8,6 +8,7 @@ pub mod poller;
 pub mod produce_block;
 pub mod runner;
 pub mod stake;
+pub mod test_bot;
 pub mod test_mode_control;
 pub mod types;
 pub mod utils;

@@ -1913,6 +1913,7 @@ dependencies = [
  "ckb-chain-spec",
  "ckb-crypto 0.100.0",
  "ckb-fixed-hash 0.100.0",
+ "ckb-sdk",
  "ckb-types",
  "clap",
  "ctrlc",
@@ -1939,9 +1940,11 @@ dependencies = [
  "lazy_static",
  "log",
  "rayon",
+ "secp256k1 0.17.2",
  "semver 1.0.3",
  "serde",
  "serde_json",
+ "sha3",
  "smol",
  "sqlx",
  "toml",
@@ -2321,12 +2324,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ckb-crypto 0.38.0",
+ "ckb-sdk",
  "faster-hex 0.4.1",
  "gw-common",
  "gw-config",
  "gw-poa",
  "gw-rpc-client",
  "gw-types",
+ "secp256k1 0.17.2",
+ "sha3",
 ]
 
 [[package]]
