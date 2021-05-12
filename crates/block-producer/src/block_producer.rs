@@ -277,13 +277,14 @@ impl BlockProducer {
         };
 
         // try issue next block
-        if let ShouldIssueBlock::Yes = self
-            .poa
-            .should_issue_next_block(median_time, &poa_cell_input)
-            .await?
-        {
-            self.produce_next_block(median_time, rollup_cell).await?;
-        }
+        // if let ShouldIssueBlock::Yes = self
+        //     .poa
+        //     .should_issue_next_block(median_time, &poa_cell_input)
+        //     .await?
+        // {
+        self.produce_next_block(median_time, rollup_cell).await?;
+        async_std::task::sleep(Duration::new(10, 0)).await;
+        // }
         Ok(())
     }
 
