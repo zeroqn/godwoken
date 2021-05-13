@@ -258,5 +258,12 @@ pub fn generate_config(
 
     let output_content = toml::to_string_pretty(&config).expect("serde toml to string pretty");
     fs::write(output_path, output_content.as_bytes()).map_err(|err| anyhow!("{}", err))?;
+
+    let json_output_content =
+        serde_json::to_string_pretty(&config).expect("serde json to string pretry");
+    let mut json_output_path = std::path::PathBuf::from(output_path);
+    json_output_path.set_extension("json");
+    fs::write(json_output_path, json_output_content.as_bytes())
+        .map_err(|err| anyhow!("{}", err))?;
     Ok(())
 }
