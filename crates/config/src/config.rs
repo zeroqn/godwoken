@@ -55,6 +55,12 @@ pub struct WalletConfig {
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DebugBurnConfig {
+    pub burn_lock: Script,
+    pub burn_lock_dep: CellDep,
+}
+
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BlockProducerConfig {
     pub account_id: u32,
     // cell deps
@@ -67,6 +73,7 @@ pub struct BlockProducerConfig {
     pub custodian_cell_lock_dep: CellDep,
     pub withdrawal_cell_lock_dep: CellDep,
     pub l1_sudt_type_dep: CellDep,
+    pub debug_burn_config: DebugBurnConfig,
     pub wallet_config: WalletConfig,
 }
 

@@ -2,6 +2,7 @@ use std::path::Path;
 use std::str::FromStr;
 use std::{fs, ops::Deref};
 
+use ckb_types::packed::Script;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
@@ -300,8 +301,30 @@ pub fn deploy_genesis(
             .into_iter()
             .map(|hash| GwPack::pack(&hash)),
     );
+
+    /*
+     * Use always success to build l1_sudt_script_type_hash and burn lock
+     */
+    let always_success_type_hash: [u8; 32] = deployment_result
+        .always_success
+        .script_type_hash
+        .clone()
+        .into();
+    let l1_sudt_type_script = Script::new_builder()
+        .code_hash(CKBPack::pack(&always_success_type_hash.clone()))
+        .hash_type(ScriptHashType::Type.into())
+        .build();
+    let l1_sudt_script_type_hash: [u8; 32] = l1_sudt_type_script.calc_script_hash().unpack();
+
+    let burn_lock_script = Script::new_builder()
+        .code_hash(CKBPack::pack(&always_success_type_hash.clone()))
+        .hash_type(ScriptHashType::Type.into())
+        .build();
+    let burn_lock_script_hash: [u8; 32] = burn_lock_script.calc_script_hash().unpack();
+
     let rollup_config = RollupConfig::new_builder()
         .l1_sudt_script_type_hash(GwPack::pack(&user_rollup_config.l1_sudt_script_type_hash))
+        .l1_sudt_script_type_hash(GwPack::pack(&l1_sudt_script_type_hash)) // Override with our always success version
         .custodian_script_type_hash(GwPack::pack(
             &deployment_result.custodian_lock.script_type_hash,
         ))
@@ -319,6 +342,7 @@ pub fn deploy_genesis(
             &deployment_result.l2_sudt_validator.script_type_hash,
         ))
         .burn_lock_hash(GwPack::pack(&user_rollup_config.burn_lock_hash))
+        .burn_lock_hash(GwPack::pack(&burn_lock_script_hash)) // Override with our alwayws success verion
         .required_staking_capacity(GwPack::pack(&user_rollup_config.required_staking_capacity))
         .challenge_maturity_blocks(GwPack::pack(&user_rollup_config.challenge_maturity_blocks))
         .finality_blocks(GwPack::pack(&user_rollup_config.finality_blocks))
