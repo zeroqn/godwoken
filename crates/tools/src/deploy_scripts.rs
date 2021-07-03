@@ -44,6 +44,9 @@ pub struct Programs {
     pub state_validator_lock: PathBuf,
     // path: clerkb/build/debug/state.strip
     pub poa_state: PathBuf,
+
+    // path: godwoken-scripts/build/release/always-success
+    pub always_success: PathBuf,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Debug, Default)]
@@ -73,6 +76,7 @@ pub struct ScriptsDeploymentResult {
     pub polyjuice_validator: DeployItem,
     pub state_validator_lock: DeployItem,
     pub poa_state: DeployItem,
+    pub always_success: DeployItem,
 }
 
 pub fn deploy_program(
@@ -199,6 +203,7 @@ pub fn deploy_scripts(
         &deployment_index.programs.polyjuice_validator,
         &deployment_index.programs.state_validator_lock,
         &deployment_index.programs.poa_state,
+        &deployment_index.programs.always_success,
     ] {
         match fs::metadata(path).map_err(|err| err.to_string()) {
             Ok(metadata) => {
@@ -307,6 +312,13 @@ pub fn deploy_scripts(
         &target_lock,
         &target_address,
     )?;
+    let always_success = deploy_program(
+        privkey_path,
+        &mut rpc_client,
+        &deployment_index.programs.poa_state,
+        &target_lock,
+        &target_address,
+    )?;
     let deployment_result = ScriptsDeploymentResult {
         custodian_lock,
         deposit_lock,
@@ -321,6 +333,7 @@ pub fn deploy_scripts(
         polyjuice_validator,
         state_validator_lock,
         poa_state,
+        always_success,
     };
     let output_content =
         serde_json::to_string_pretty(&deployment_result).expect("serde json to string pretty");
