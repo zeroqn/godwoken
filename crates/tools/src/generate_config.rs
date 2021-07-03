@@ -77,19 +77,6 @@ pub fn generate_config(
     // build configuration
     let account_id = 0;
 
-    // let privkey_path = "<private key path>".into();
-    let privkey_path = PathBuf::from("../godwoken-test/deployment/secret.key");
-    // let lock = serde_json::from_str(
-    //     r#"
-    //     {
-    //         "code_hash": "0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8",
-    //         "hash_type": "type",
-    //         "args": "0xea2a4b9a338c797b28a490b5d7f3b9e320407d66"
-    //     }
-    // "#,
-    // )
-    // .expect("wallet script");
-
     let node_wallet_info = get_wallet_info(&privkey_path);
     let code_hash: [u8; 32] = {
         let mut hash = [0u8; 32];
