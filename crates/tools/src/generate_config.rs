@@ -5,8 +5,9 @@ use anyhow::{anyhow, Result};
 use ckb_sdk::HttpRpcClient;
 use ckb_types::prelude::{Builder, Entity};
 use gw_config::{
-    BackendConfig, BlockProducerConfig, ChainConfig, ChallengerConfig, Config, GenesisConfig,
-    NodeMode, RPCClientConfig, RPCServerConfig, StoreConfig, WalletConfig, Web3IndexerConfig,
+    BackendConfig, BlockProducerConfig, ChainConfig, ChallengerConfig, Config, DebugBurnConfig,
+    GenesisConfig, NodeMode, RPCClientConfig, RPCServerConfig, StoreConfig, WalletConfig,
+    Web3IndexerConfig,
 };
 use gw_jsonrpc_types::godwoken::L2BlockCommittedInfo;
 use gw_types::{core::ScriptHashType, packed::Script, prelude::*};
@@ -157,7 +158,29 @@ pub fn generate_config(
     };
 
     // TODO: automatic generation
-    let l1_sudt_type_dep = gw_types::packed::CellDep::default().into();
+    // let l1_sudt_type_dep = gw_types::packed::CellDep::default().into();
+
+    let l1_sudt_type_dep = {
+        let dep: ckb_types::packed::CellDep =
+            scripts_results.always_success.cell_dep.clone().into();
+        gw_types::packed::CellDep::new_unchecked(dep.as_bytes()).into()
+    };
+
+    let debug_burn_lock_dep = {
+        let dep: ckb_types::packed::CellDep =
+            scripts_results.always_success.cell_dep.clone().into();
+        gw_types::packed::CellDep::new_unchecked(dep.as_bytes()).into()
+    };
+    let debug_burn_lock_script_hash = scripts_results.always_success.script_type_hash.clone();
+    let debug_burn_lock = gw_jsonrpc_types::blockchain::Script {
+        code_hash: debug_burn_lock_script_hash,
+        hash_type: gw_jsonrpc_types::blockchain::ScriptHashType::Type,
+        args: gw_jsonrpc_types::ckb_jsonrpc_types::JsonBytes::default(),
+    };
+    let debug_burn_config = DebugBurnConfig {
+        burn_lock: debug_burn_lock,
+        burn_lock_dep: debug_burn_lock_dep,
+    };
 
     // Allowed eoa script deps
     let mut allowed_eoa_deps = HashMap::new();
@@ -271,6 +294,7 @@ pub fn generate_config(
         allowed_eoa_deps,
         allowed_contract_deps,
         challenger_config,
+        debug_burn_config,
         wallet_config,
     });
     let genesis: GenesisConfig = GenesisConfig {
