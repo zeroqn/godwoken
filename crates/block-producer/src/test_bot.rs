@@ -35,6 +35,8 @@ pub struct TestBot {
     wallet: Wallet,
     block_producer_config: BlockProducerConfig,
     ckb_genesis_info: CKBGenesisInfo,
+    duplicate_tx: bool,
+    duplicate_withdrawal: bool,
 }
 
 impl TestBot {
@@ -57,6 +59,8 @@ impl TestBot {
             wallet,
             block_producer_config,
             ckb_genesis_info,
+            duplicate_withdrawal: false,
+            duplicate_tx: false,
         };
 
         Ok(chaos)
@@ -90,16 +94,28 @@ impl TestBot {
             && l2_finalized_sudt_balance > 100
             && l2_finalized_ckb_balance > 2000 * 100_000_000
             && tip_block_number % 2 != 0
+            && !self.duplicate_withdrawal
         {
-            self.withdrawal_sudt(100, 400)?;
+            match self.withdrawal_sudt(100, 400) {
+                Err(err) if err.to_string().contains("duplicate") => {
+                    self.duplicate_withdrawal = true
+                }
+                Ok(()) => self.duplicate_withdrawal = false,
+                Err(err) => return Err(err),
+            }
         }
 
-        if l2_sudt_balance > 10 && tip_block_number % 2 == 0 {
+        if l2_sudt_balance > 10 && tip_block_number % 2 == 0 && !self.duplicate_tx {
             let to_eth_address: [u8; 20] = [1u8; 20];
             let to = self.l2_account_script(to_eth_address);
             let to_hex = hex::encode(&to_eth_address);
 
-            self.l2_sudt_transfer_to(to_eth_address, 1)?;
+            match self.l2_sudt_transfer_to(to_eth_address, 1) {
+                Err(err) if err.to_string().contains("duplicate") => self.duplicate_tx = true,
+                Ok(()) => self.duplicate_tx = false,
+                Err(err) => return Err(err),
+            }
+
             let balance = self.get_l2_sudt_balance(&to)?;
 
             log::info!("latest {} l2 sudt balance {}", to_hex, balance);
