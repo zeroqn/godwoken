@@ -641,7 +641,7 @@ impl BlockProducer {
                 if type_.code_hash() != ctx.rollup_config.l1_sudt_script_type_hash()
                     || type_.hash_type() != hash_type
                 {
-                    log::debug!(
+                    log::error!(
                         "Invalid deposit sUDT, expect code_hash: {}, hash_type: Type, got: {}, {}",
                         ctx.rollup_config.l1_sudt_script_type_hash(),
                         type_.code_hash(),
@@ -665,7 +665,7 @@ impl BlockProducer {
                     .into_iter()
                     .all(|type_hash| script.code_hash() != type_hash)
                 {
-                    log::debug!(
+                    log::error!(
                         "Invalid deposit account script: unknown code_hash: {:?}",
                         hex::encode(script.code_hash().as_slice())
                     );
@@ -673,14 +673,14 @@ impl BlockProducer {
                 }
                 let args: Bytes = script.args().unpack();
                 if args.len() < 32 {
-                    log::debug!(
+                    log::error!(
                         "Invalid deposit account args, expect len: 32, got: {}",
                         args.len()
                     );
                     continue;
                 }
                 if &args[..32] != ctx.rollup_script_hash.as_slice() {
-                    log::debug!(
+                    log::error!(
                         "Invalid deposit account args, expect rollup_script_hash: {}, got: {}",
                         hex::encode(ctx.rollup_script_hash.as_slice()),
                         hex::encode(&args[..32])

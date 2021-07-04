@@ -107,7 +107,7 @@ async fn poll_loop(
 
             if let Err(err) = inner.chaos.handle_event(&event).await {
                 log::error!(
-                    "Error occured when polling chain_updater, event: {:?}, error: {}",
+                    "Error occured when polling chaos, event: {:?}, error: {}",
                     event,
                     err
                 );
@@ -278,7 +278,7 @@ pub fn run(config: Config) -> Result<()> {
     let chain_updater = ChainUpdater::new(
         Arc::clone(&chain),
         rpc_client.clone(),
-        rollup_context,
+        rollup_context.clone(),
         rollup_type_script.clone(),
         web3_indexer,
     );
@@ -290,6 +290,8 @@ pub fn run(config: Config) -> Result<()> {
     };
 
     let chaos = Chaos::create(
+        store.clone(),
+        rollup_context,
         rpc_client.clone(),
         block_producer_config.clone(),
         ckb_genesis_info.clone(),
