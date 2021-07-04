@@ -334,11 +334,11 @@ pub fn deploy_genesis(
         .script_type_hash
         .clone()
         .into();
-    let l1_sudt_type_script = Script::new_builder()
-        .code_hash(CKBPack::pack(&always_success_type_hash.clone()))
-        .hash_type(ScriptHashType::Type.into())
-        .build();
-    let l1_sudt_script_type_hash: [u8; 32] = l1_sudt_type_script.calc_script_hash().unpack();
+    let l1_sudt_script_type_hash: H256 = deployment_result
+        .always_success
+        .script_type_hash
+        .clone()
+        .into();
 
     let burn_lock_script = Script::new_builder()
         .code_hash(CKBPack::pack(&always_success_type_hash.clone()))

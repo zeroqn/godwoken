@@ -845,19 +845,20 @@ impl BlockProducer {
                     lock.hash_type()
                 ));
             }
-            let args: Bytes = lock.args().unpack();
-            if args.len() < 32 {
-                return Err(anyhow!(
-                    "Invalid deposit args, expect len: 32, got: {}",
-                    args.len()
-                ));
-            }
-            if &args[..32] != ctx.rollup_script_hash.as_slice() {
-                return Err(anyhow!(
-                    "Invalid deposit args, expect rollup_script_hash: {}, got: {}",
-                    hex::encode(ctx.rollup_script_hash.as_slice()),
-                    hex::encode(&args[..32])
-                ));
+            // check sUDT
+            // sUDT may be invalid, this may caused by malicious user
+            if let Some(type_) = cell.cell.output.type_().to_opt() {
+                if type_.code_hash() != ctx.rollup_config.l1_sudt_script_type_hash()
+                    || type_.hash_type() != hash_type
+                {
+                    log::error!(
+                        "Invalid deposit sUDT, expect code_hash: {}, hash_type: Type, got: {}, {}",
+                        ctx.rollup_config.l1_sudt_script_type_hash(),
+                        type_.code_hash(),
+                        type_.hash_type()
+                    );
+                    continue;
+                }
             }
         }
 

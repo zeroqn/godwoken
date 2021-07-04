@@ -1,7 +1,7 @@
 use crate::{
     block_producer::BlockProducer, challenger::Challenger, cleaner::Cleaner, poa::PoA,
-    poller::ChainUpdater, rpc_client::RPCClient, test_mode_control::TestModeControl,
-    types::ChainEvent, utils::CKBGenesisInfo, wallet::Wallet,
+    poller::ChainUpdater, rpc_client::RPCClient, test_bot::TestBot,
+    test_mode_control::TestModeControl, types::ChainEvent, utils::CKBGenesisInfo, wallet::Wallet,
 };
 use anyhow::{anyhow, Context, Result};
 use async_jsonrpc_client::HttpClient;
@@ -47,6 +47,7 @@ const DEFAULT_RUNTIME_THREADS: usize = 4;
 
 async fn poll_loop(
     rpc_client: RPCClient,
+    test_bot: TestBot,
     chain_updater: ChainUpdater,
     block_producer: Option<BlockProducer>,
     challenger: Option<Challenger>,
@@ -55,6 +56,7 @@ async fn poll_loop(
 ) -> Result<()> {
     struct Inner {
         chain_updater: ChainUpdater,
+        test_bot: TestBot,
         block_producer: Option<BlockProducer>,
         challenger: Option<Challenger>,
         cleaner: Option<Arc<Cleaner>>,
@@ -63,6 +65,7 @@ async fn poll_loop(
     let inner = Arc::new(smol::lock::Mutex::new(Inner {
         chain_updater,
         challenger,
+        test_bot,
         block_producer,
         cleaner,
     }));
@@ -121,6 +124,14 @@ async fn poll_loop(
                         err
                     );
                 }
+            }
+
+            if let Err(err) = inner.test_bot.handle_event(&event).await {
+                log::error!(
+                    "Error occured when polling test bot, event: {:?}, error: {}",
+                    event,
+                    err
+                );
             }
 
             if let Some(ref mut block_producer) = inner.block_producer {
@@ -322,6 +333,18 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
         CKBGenesisInfo::from_block(&ckb_genesis)?
     };
 
+    let test_bot = TestBot::create(
+        store.clone(),
+        mem_pool.clone(),
+        rollup_context,
+        rpc_client.clone(),
+        config
+            .block_producer
+            .clone()
+            .ok_or_else(|| anyhow!("not set block producer"))?,
+        ckb_genesis_info.clone(),
+    )?;
+
     let (block_producer, challenger, test_mode_control, cleaner) = match config.node_mode {
         NodeMode::ReadOnly => (None, None, None, None),
         _ => {
@@ -455,6 +478,7 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
 
     let chain_task = smol::spawn(poll_loop(
         rpc_client,
+        test_bot,
         chain_updater,
         block_producer,
         challenger,

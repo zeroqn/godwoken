@@ -5,9 +5,9 @@ use anyhow::{anyhow, Result};
 use ckb_sdk::HttpRpcClient;
 use ckb_types::prelude::{Builder, Entity};
 use gw_config::{
-    BackendConfig, BlockProducerConfig, ChainConfig, ChallengerConfig, Config, DebugBurnConfig,
-    GenesisConfig, NodeMode, RPCClientConfig, RPCServerConfig, StoreConfig, WalletConfig,
-    Web3IndexerConfig,
+    AllowedScriptsConfig, BackendConfig, BlockProducerConfig, ChainConfig, ChallengerConfig,
+    Config, DebugBurnConfig, GenesisConfig, NodeMode, RPCClientConfig, RPCServerConfig,
+    StoreConfig, WalletConfig, Web3IndexerConfig,
 };
 use gw_jsonrpc_types::godwoken::L2BlockCommittedInfo;
 use gw_types::{core::ScriptHashType, packed::Script, prelude::*};
@@ -241,6 +241,23 @@ pub fn generate_config(
         burn_lock: gw_types::packed::Script::default().into(),
     };
 
+    let allowed_scripts_config: AllowedScriptsConfig = {
+        let eth_account_lock_hash = scripts_results.eth_account_lock.script_type_hash.clone();
+        let mut script_deps = HashMap::new();
+
+        let eth_account_lock_dep = {
+            let dep: ckb_types::packed::CellDep =
+                scripts_results.eth_account_lock.cell_dep.clone().into();
+            gw_types::packed::CellDep::new_unchecked(dep.as_bytes()).into()
+        };
+        script_deps.insert(eth_account_lock_hash.clone(), eth_account_lock_dep);
+
+        AllowedScriptsConfig {
+            eth_account_lock_hash,
+            script_deps,
+        }
+    };
+
     let wallet_config: WalletConfig = WalletConfig {
         privkey_path: privkey_path.into(),
         lock,
@@ -301,6 +318,7 @@ pub fn generate_config(
         allowed_contract_deps,
         challenger_config,
         debug_burn_config,
+        allowed_scripts_config,
         l1_sudt_script,
         wallet_config,
     });
