@@ -90,6 +90,7 @@ pub struct BlockProducerConfig {
     pub allowed_contract_deps: HashMap<H256, CellDep>,
     pub challenger_config: ChallengerConfig,
     pub debug_burn_config: DebugBurnConfig,
+    pub l1_sudt_script: Script,
     pub wallet_config: WalletConfig,
 }
 
