@@ -1,5 +1,5 @@
 use crate::{
-    block_producer::BlockProducer, poller::ChainUpdater, rpc_client::RPCClient,
+    block_producer::BlockProducer, chaos::Chaos, poller::ChainUpdater, rpc_client::RPCClient,
     test_mode_control::TestModeControl, types::ChainEvent, utils::CKBGenesisInfo,
 };
 use anyhow::{anyhow, Context, Result};
@@ -40,17 +40,20 @@ use std::{
 async fn poll_loop(
     rpc_client: RPCClient,
     chain_updater: ChainUpdater,
+    chaos: Chaos,
     block_producer: BlockProducer,
     test_mode_control: TestModeControl,
     poll_interval: Duration,
 ) -> Result<()> {
     struct Inner {
         chain_updater: ChainUpdater,
+        chaos: Chaos,
         block_producer: BlockProducer,
     }
 
     let inner = Arc::new(smol::lock::Mutex::new(Inner {
         chain_updater,
+        chaos,
         block_producer,
     }));
     // get tip
@@ -95,6 +98,14 @@ async fn poll_loop(
             // async move {
             let mut inner = inner.lock().await;
             if let Err(err) = inner.chain_updater.handle_event(event.clone()).await {
+                log::error!(
+                    "Error occured when polling chain_updater, event: {:?}, error: {}",
+                    event,
+                    err
+                );
+            }
+
+            if let Err(err) = inner.chaos.handle_event(&event).await {
                 log::error!(
                     "Error occured when polling chain_updater, event: {:?}, error: {}",
                     event,
@@ -278,6 +289,12 @@ pub fn run(config: Config) -> Result<()> {
         CKBGenesisInfo::from_block(&ckb_genesis)?
     };
 
+    let chaos = Chaos::create(
+        rpc_client.clone(),
+        block_producer_config.clone(),
+        ckb_genesis_info.clone(),
+    )?;
+
     // create block producer
     let block_producer = BlockProducer::create(
         rollup_config_hash,
@@ -326,7 +343,7 @@ pub fn run(config: Config) -> Result<()> {
     smol::block_on(async {
         select! {
             _ = ctrl_c.recv().fuse() => log::info!("Exiting..."),
-            e = poll_loop(rpc_client, chain_updater, block_producer, test_mode_control ,Duration::from_secs(3)).fuse() => {
+            e = poll_loop(rpc_client, chain_updater, chaos, block_producer, test_mode_control ,Duration::from_secs(3)).fuse() => {
                 log::error!("Error in main poll loop: {:?}", e);
             }
             e = start_jsonrpc_server(rpc_address, rpc_registry).fuse() => {
