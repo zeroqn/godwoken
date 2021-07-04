@@ -291,6 +291,7 @@ pub fn run(config: Config) -> Result<()> {
 
     let chaos = Chaos::create(
         store.clone(),
+        mem_pool.clone(),
         rollup_context,
         rpc_client.clone(),
         block_producer_config.clone(),
