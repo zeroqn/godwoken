@@ -10,9 +10,9 @@ use gw_store::state_db::{CheckPoint, StateDBMode, StateDBTransaction, SubState};
 use gw_store::transaction::StoreTransaction;
 use gw_store::Store;
 use gw_types::bytes::Bytes;
-use gw_types::core::ScriptHashType;
+use gw_types::core::{ScriptHashType, Status};
 use gw_types::packed::{
-    CellDep, CellOutput, DepositLockArgs, Fee, L2Transaction, RawL2Transaction,
+    CellDep, CellOutput, DepositLockArgs, Fee, GlobalState, L2Transaction, RawL2Transaction,
     RawWithdrawalRequest, SUDTArgs, SUDTTransfer, Script, WithdrawalRequest,
 };
 use gw_types::prelude::{Pack, Unpack};
@@ -24,6 +24,7 @@ use crate::types::ChainEvent;
 use crate::utils::{fill_tx_fee, CKBGenesisInfo};
 use crate::wallet::Wallet;
 
+use std::convert::TryFrom;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,6 +38,7 @@ pub struct TestBot {
     ckb_genesis_info: CKBGenesisInfo,
     duplicate_tx: bool,
     duplicate_withdrawal: bool,
+    last_block_number: u64,
 }
 
 impl TestBot {
@@ -61,6 +63,7 @@ impl TestBot {
             ckb_genesis_info,
             duplicate_withdrawal: false,
             duplicate_tx: false,
+            last_block_number: 0,
         };
 
         Ok(chaos)
@@ -73,6 +76,22 @@ impl TestBot {
             async_std::task::sleep(Duration::new(3, 0)).await;
             balance = self.get_sudt_balance().await?;
         }
+
+        let rollup_cell_opt = self.rpc_client.query_rollup_cell().await?;
+        let rollup_cell = rollup_cell_opt.ok_or_else(|| anyhow!("can't found rollup cell"))?;
+        let global_state = GlobalState::from_slice(&rollup_cell.data)?;
+        let rollup_state = {
+            let status: u8 = global_state.status().into();
+            Status::try_from(status).map_err(|n| anyhow!("invalid status {}", n))?
+        };
+        if Status::Halting == rollup_state {
+            return Ok(());
+        }
+        let rollup_block_number = global_state.block().count().unpack();
+        if rollup_block_number <= self.last_block_number {
+            return Ok(());
+        }
+        self.last_block_number = rollup_block_number;
 
         let self_account = self.l2_account_script(self.wallet.eth_address());
         let l2_sudt_balance = self.get_l2_sudt_balance(&self_account)?;
