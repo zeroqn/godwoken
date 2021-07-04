@@ -1,5 +1,5 @@
 use crate::{
-    block_producer::BlockProducer, chaos::Chaos, poller::ChainUpdater, rpc_client::RPCClient,
+    block_producer::BlockProducer, poller::ChainUpdater, rpc_client::RPCClient, test_bot::TestBot,
     test_mode_control::TestModeControl, types::ChainEvent, utils::CKBGenesisInfo,
 };
 use anyhow::{anyhow, Context, Result};
@@ -40,20 +40,20 @@ use std::{
 async fn poll_loop(
     rpc_client: RPCClient,
     chain_updater: ChainUpdater,
-    chaos: Chaos,
+    test_bot: TestBot,
     block_producer: BlockProducer,
     test_mode_control: TestModeControl,
     poll_interval: Duration,
 ) -> Result<()> {
     struct Inner {
         chain_updater: ChainUpdater,
-        chaos: Chaos,
+        test_bot: TestBot,
         block_producer: BlockProducer,
     }
 
     let inner = Arc::new(smol::lock::Mutex::new(Inner {
         chain_updater,
-        chaos,
+        test_bot,
         block_producer,
     }));
     // get tip
@@ -105,9 +105,9 @@ async fn poll_loop(
                 );
             }
 
-            if let Err(err) = inner.chaos.handle_event(&event).await {
+            if let Err(err) = inner.test_bot.handle_event(&event).await {
                 log::error!(
-                    "Error occured when polling chaos, event: {:?}, error: {}",
+                    "Error occured when polling test bot, event: {:?}, error: {}",
                     event,
                     err
                 );
@@ -289,7 +289,7 @@ pub fn run(config: Config) -> Result<()> {
         CKBGenesisInfo::from_block(&ckb_genesis)?
     };
 
-    let chaos = Chaos::create(
+    let test_bot = TestBot::create(
         store.clone(),
         mem_pool.clone(),
         rollup_context,
@@ -346,7 +346,7 @@ pub fn run(config: Config) -> Result<()> {
     smol::block_on(async {
         select! {
             _ = ctrl_c.recv().fuse() => log::info!("Exiting..."),
-            e = poll_loop(rpc_client, chain_updater, chaos, block_producer, test_mode_control ,Duration::from_secs(3)).fuse() => {
+            e = poll_loop(rpc_client, chain_updater, test_bot, block_producer, test_mode_control ,Duration::from_secs(3)).fuse() => {
                 log::error!("Error in main poll loop: {:?}", e);
             }
             e = start_jsonrpc_server(rpc_address, rpc_registry).fuse() => {

@@ -27,7 +27,7 @@ use crate::wallet::Wallet;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub struct Chaos {
+pub struct TestBot {
     store: Store,
     mem_pool: Arc<parking_lot::Mutex<MemPool>>,
     rollup_context: RollupContext,
@@ -37,7 +37,7 @@ pub struct Chaos {
     ckb_genesis_info: CKBGenesisInfo,
 }
 
-impl Chaos {
+impl TestBot {
     pub fn create(
         store: Store,
         mem_pool: Arc<parking_lot::Mutex<MemPool>>,
@@ -49,7 +49,7 @@ impl Chaos {
         let wallet = Wallet::from_config(&block_producer_config.wallet_config)
             .with_context(|| "init wallet")?;
 
-        let chaos = Chaos {
+        let chaos = TestBot {
             store,
             mem_pool,
             rollup_context,
