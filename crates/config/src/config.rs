@@ -74,6 +74,7 @@ pub struct BlockProducerConfig {
     pub withdrawal_cell_lock_dep: CellDep,
     pub l1_sudt_type_dep: CellDep,
     pub debug_burn_config: DebugBurnConfig,
+    pub l1_sudt_script: Script,
     pub wallet_config: WalletConfig,
 }
 

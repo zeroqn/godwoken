@@ -158,6 +158,12 @@ pub fn generate_config(
             scripts_results.always_success.cell_dep.clone().into();
         gw_types::packed::CellDep::new_unchecked(dep.as_bytes()).into()
     };
+    let l1_sudt_type_script_hash = scripts_results.always_success.script_type_hash.clone();
+    let l1_sudt_script = gw_jsonrpc_types::blockchain::Script {
+        code_hash: l1_sudt_type_script_hash,
+        hash_type: gw_jsonrpc_types::blockchain::ScriptHashType::Type,
+        args: gw_jsonrpc_types::ckb_jsonrpc_types::JsonBytes::default(),
+    };
 
     let debug_burn_lock_dep = {
         let dep: ckb_types::packed::CellDep =
@@ -231,6 +237,7 @@ pub fn generate_config(
         withdrawal_cell_lock_dep,
         l1_sudt_type_dep,
         debug_burn_config,
+        l1_sudt_script,
         wallet_config,
     });
     let genesis: GenesisConfig = GenesisConfig {
