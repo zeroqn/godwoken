@@ -69,7 +69,7 @@ impl TestBot {
         Ok(chaos)
     }
 
-    pub async fn handle_event(&mut self, event: &ChainEvent) -> Result<()> {
+    pub async fn handle_event(&mut self, _event: &ChainEvent) -> Result<()> {
         let mut balance = self.get_sudt_balance().await?;
         while balance < 1_000_000 {
             self.issue_sudt(1_000_000).await?;
@@ -107,12 +107,11 @@ impl TestBot {
             async_std::task::sleep(Duration::new(3, 0)).await;
         }
 
-        let tip_block_number = to_tip_block_number(event);
         if l2_sudt_balance >= 1000
             && l2_ckb_balance > 2000 * 100_000_000
             && l2_finalized_sudt_balance > 100
             && l2_finalized_ckb_balance > 2000 * 100_000_000
-            && tip_block_number % 2 != 0
+            && self.last_block_number % 2 != 0
             && !self.duplicate_withdrawal
         {
             match self.withdrawal_sudt(100, 400) {
@@ -124,7 +123,7 @@ impl TestBot {
             }
         }
 
-        if l2_sudt_balance > 10 && tip_block_number % 2 == 0 && !self.duplicate_tx {
+        if l2_sudt_balance > 10 && self.last_block_number % 2 == 0 && !self.duplicate_tx {
             let to_eth_address: [u8; 20] = [1u8; 20];
             let to = self.l2_account_script(to_eth_address);
             let to_hex = hex::encode(&to_eth_address);
@@ -500,16 +499,4 @@ fn get_account_id<S: State>(state: &S, l2_account_script: &Script) -> Result<u32
     let l2_account_script_hash: H256 = l2_account_script.hash().into();
     let id = state.get_account_id_by_script_hash(&l2_account_script_hash)?;
     Ok(id.ok_or_else(|| anyhow!("account not found"))?)
-}
-
-fn to_tip_block_number(event: &ChainEvent) -> u64 {
-    let tip_block = match event {
-        ChainEvent::Reverted {
-            old_tip: _,
-            new_block,
-        } => new_block,
-        ChainEvent::NewBlock { block } => block,
-    };
-    let header = tip_block.header();
-    header.raw().number().unpack()
 }
