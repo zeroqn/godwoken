@@ -157,12 +157,12 @@ pub fn produce_block(param: ProduceBlockParam<'_>) -> Result<ProduceBlockResult>
     for tx in txs {
         // 1. verify tx
         if let Err(err) = generator.check_transaction_signature(&state, &tx) {
-            log::debug!("produce_block.check tx signature error: {:?}", err);
+            log::error!("produce_block.check tx signature error: {:?}", err);
             unused_transactions.push(tx);
             continue;
         }
         if let Err(err) = generator.verify_transaction(&state, &tx) {
-            log::debug!("produce_block.verify tx error: {:?}", err);
+            log::error!("produce_block.verify tx error: {:?}", err);
             unused_transactions.push(tx);
             continue;
         }
@@ -172,7 +172,7 @@ pub fn produce_block(param: ProduceBlockParam<'_>) -> Result<ProduceBlockResult>
             match generator.execute_transaction(&chain_view, &state, &block_info, &raw_tx) {
                 Ok(run_result) => run_result,
                 Err(err) => {
-                    log::debug!("produce_block.execute tx error: {:?}", err);
+                    log::error!("produce_block.execute tx error: {:?}", err);
                     unused_transactions.push(tx);
                     continue;
                 }

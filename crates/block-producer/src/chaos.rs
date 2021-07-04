@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Context, Result};
 use ckb_types::prelude::{Builder, Entity};
-use gw_common::blake2b::new_blake2b;
 use gw_common::builtins::CKB_SUDT_ACCOUNT_ID;
 use gw_common::state::{to_short_address, State};
 use gw_common::{CKB_SUDT_SCRIPT_ARGS, H256};
@@ -13,9 +12,10 @@ use gw_store::Store;
 use gw_types::bytes::Bytes;
 use gw_types::core::ScriptHashType;
 use gw_types::packed::{
-    CellDep, CellOutput, DepositLockArgs, Fee, RawWithdrawalRequest, Script, WithdrawalRequest,
+    CellDep, CellOutput, DepositLockArgs, Fee, L2Transaction, RawL2Transaction,
+    RawWithdrawalRequest, SUDTArgs, SUDTTransfer, Script, WithdrawalRequest,
 };
-use gw_types::prelude::Pack;
+use gw_types::prelude::{Pack, Unpack};
 use sha3::{Digest, Keccak256};
 
 use crate::rpc_client::RPCClient;
@@ -62,7 +62,7 @@ impl Chaos {
         Ok(chaos)
     }
 
-    pub async fn handle_event(&mut self, _event: &ChainEvent) -> Result<()> {
+    pub async fn handle_event(&mut self, event: &ChainEvent) -> Result<()> {
         let mut balance = self.get_sudt_balance().await?;
         while balance < 1_000_000 {
             self.issue_sudt(1_000_000).await?;
@@ -70,7 +70,8 @@ impl Chaos {
             balance = self.get_sudt_balance().await?;
         }
 
-        let l2_sudt_balance = self.get_l2_sudt_balance()?;
+        let self_account = self.l2_account_script(self.wallet.eth_address());
+        let l2_sudt_balance = self.get_l2_sudt_balance(&self_account)?;
         let l2_ckb_balance = self.get_l2_ckb_balance()?;
         let l2_finalized_sudt_balance = self.get_finalized_sudt_balance()?;
         let l2_finalized_ckb_balance = self.get_finalized_ckb_balance()?;
@@ -78,17 +79,30 @@ impl Chaos {
             self.deposit_sudt(10_000, 1000).await?; // addition for custodian and withdrawal cell
             async_std::task::sleep(Duration::new(3, 0)).await;
         }
-        if l2_ckb_balance < 1500u128 * 100_000_000 {
-            self.deposit_sudt(1, 1000).await?;
+        if l2_ckb_balance < 2000u128 * 100_000_000 {
+            self.deposit_sudt(1, 10_000).await?;
             async_std::task::sleep(Duration::new(3, 0)).await;
         }
 
+        let tip_block_number = to_tip_block_number(event);
         if l2_sudt_balance >= 1000
-            && l2_ckb_balance > 1500 * 100_000_000
+            && l2_ckb_balance > 2000 * 100_000_000
             && l2_finalized_sudt_balance > 100
-            && l2_finalized_ckb_balance > 1500 * 100_000_000
+            && l2_finalized_ckb_balance > 2000 * 100_000_000
+            && tip_block_number % 2 != 0
         {
-            self.withdrawal_sudt(100, 500)?;
+            self.withdrawal_sudt(100, 400)?;
+        }
+
+        if l2_sudt_balance > 10 && tip_block_number % 2 == 0 {
+            let to_eth_address: [u8; 20] = [1u8; 20];
+            let to = self.l2_account_script(to_eth_address);
+            let to_hex = hex::encode(&to_eth_address);
+
+            self.l2_sudt_transfer_to(to_eth_address, 1)?;
+            let balance = self.get_l2_sudt_balance(&to)?;
+
+            log::info!("latest {} l2 sudt balance {}", to_hex, balance);
         }
 
         log::info!("latest l1 sudt balance {}", balance);
@@ -105,7 +119,7 @@ impl Chaos {
         Ok(())
     }
 
-    pub async fn get_sudt_balance(&self) -> Result<u128> {
+    async fn get_sudt_balance(&self) -> Result<u128> {
         let l1_sudt_type = self.block_producer_config.l1_sudt_script.clone().into();
         let owner_lock = self.wallet.lock_script().to_owned();
 
@@ -114,7 +128,7 @@ impl Chaos {
             .await
     }
 
-    pub async fn issue_sudt(&self, amount: u128) -> Result<()> {
+    async fn issue_sudt(&self, amount: u128) -> Result<()> {
         let mut tx_skeleton = TransactionSkeleton::default();
         let l1_sudt_script: Script = self.block_producer_config.l1_sudt_script.clone().into();
         let owner_lock_script: Script = self.wallet.lock_script().to_owned();
@@ -144,7 +158,7 @@ impl Chaos {
         Ok(())
     }
 
-    pub fn get_l2_sudt_balance(&self) -> Result<u128> {
+    fn get_l2_sudt_balance(&self, account_script: &Script) -> Result<u128> {
         let db = self.store.begin_transaction();
         let tip_statedb = self.tip_statedb(&db)?;
         let state = tip_statedb.account_state_tree()?;
@@ -158,18 +172,14 @@ impl Chaos {
             .get_account_id_by_script_hash(&l2_sudt_script_hash)?
             .ok_or_else(|| anyhow!("unknown layer2 sudt"))?;
 
-        let l2_lock_hash = {
-            let l2_lock = self.l2_account_script(self.wallet.eth_address());
-            l2_lock.hash().into()
-        };
-
+        let l2_lock_hash: H256 = account_script.hash().into();
         let account_short_address = to_short_address(&l2_lock_hash);
         let balance = state.get_sudt_balance(sudt_id, account_short_address)?;
 
         Ok(balance)
     }
 
-    pub fn get_l2_ckb_balance(&self) -> Result<u128> {
+    fn get_l2_ckb_balance(&self) -> Result<u128> {
         let db = self.store.begin_transaction();
         let tip_statedb = self.tip_statedb(&db)?;
         let state = tip_statedb.account_state_tree()?;
@@ -185,7 +195,7 @@ impl Chaos {
         Ok(balance)
     }
 
-    pub async fn deposit_sudt(&self, amount: u128, addition_capacity: u64) -> Result<()> {
+    async fn deposit_sudt(&self, amount: u128, addition_capacity_ckb: u64) -> Result<()> {
         let l1_sudt_script: Script = self.block_producer_config.l1_sudt_script.clone().into();
 
         let deposit_lock = {
@@ -215,7 +225,7 @@ impl Chaos {
         let mut tx_skeleton = TransactionSkeleton::default();
 
         let size = 8 + 16 + l1_sudt_script.as_slice().len() + deposit_lock.as_slice().len();
-        let capacity = (size as u64 + addition_capacity) * 100_000_000;
+        let capacity = (size as u64 + addition_capacity_ckb) * 100_000_000;
 
         let deposit = CellOutput::new_builder()
             .capacity(capacity.pack())
@@ -240,7 +250,7 @@ impl Chaos {
         Ok(())
     }
 
-    pub fn withdrawal_sudt(&self, amount: u128, capacity: u64) -> Result<()> {
+    fn withdrawal_sudt(&self, amount: u128, capacity_ckb: u64) -> Result<()> {
         let db = self.store.begin_transaction();
         let state_db = self.tip_statedb(&db)?;
         let state = state_db.account_state_tree()?;
@@ -249,16 +259,18 @@ impl Chaos {
         let l2_account_id = get_account_id(&state, &l2_account_script)?;
         let raw_withdrawal = {
             let nonce = state.get_nonce(l2_account_id)?;
-            let capacity = capacity * 100_000_000; // Enought to hold withdrawal cell
+            let capacity = capacity_ckb * 100_000_000; // Enought to hold withdrawal cell
             let l1_sudt_script: Script = self.block_producer_config.l1_sudt_script.clone().into();
             let account_script_hash = l2_account_script.hash();
             let owner_lock_hash = self.wallet.lock_script().hash();
-            let fee_sudt_id = get_account_id(&state, &self.l2_sudt_script())?;
-            let fee_amount = 1u128;
-            let fee = Fee::new_builder()
-                .sudt_id(fee_sudt_id.pack())
-                .amount(fee_amount.pack())
-                .build();
+            let fee = {
+                let sudt_id = get_account_id(&state, &self.l2_sudt_script())?;
+                let amount = 1u128;
+                Fee::new_builder()
+                    .sudt_id(sudt_id.pack())
+                    .amount(amount.pack())
+                    .build()
+            };
 
             RawWithdrawalRequest::new_builder()
                 .nonce(nonce.pack())
@@ -308,7 +320,76 @@ impl Chaos {
         Ok(())
     }
 
-    pub fn l2_account_script(&self, eth_address: [u8; 20]) -> Script {
+    fn l2_sudt_transfer_to(&self, to_eth_address: [u8; 20], amount: u128) -> Result<()> {
+        let db = self.store.begin_transaction();
+        let state_db = self.tip_statedb(&db)?;
+        let state = state_db.account_state_tree()?;
+
+        let l2_account_script = self.l2_account_script(self.wallet.eth_address());
+        let l2_account_id = get_account_id(&state, &l2_account_script)?;
+        let l2_sudt_id = get_account_id(&state, &self.l2_sudt_script())?;
+
+        let l2_to_account: Script = self.l2_account_script(to_eth_address);
+        let raw_l2tx = {
+            let nonce = state.get_nonce(l2_account_id)?;
+            let l2_to_account_hash: H256 = l2_to_account.hash().into();
+            let to_account_short_address = to_short_address(&l2_to_account_hash);
+            let sudt_transfer = SUDTTransfer::new_builder()
+                .to(to_account_short_address.pack())
+                .amount(amount.pack())
+                .fee(1.pack())
+                .build();
+            let sudt_args = SUDTArgs::new_builder().set(sudt_transfer).build();
+
+            RawL2Transaction::new_builder()
+                .from_id(l2_account_id.pack())
+                .to_id(l2_sudt_id.pack())
+                .nonce(nonce.pack())
+                .args(sudt_args.as_bytes().pack())
+                .build()
+        };
+
+        let signing_message = {
+            let message = raw_l2tx.calc_message(
+                &self.rollup_context.rollup_script_hash,
+                &l2_account_script.hash().into(),
+                &self.l2_sudt_script().hash().into(),
+            );
+
+            let mut hasher = Keccak256::new();
+            hasher.update("\x19Ethereum Signed Message:\n32");
+            hasher.update(message.as_slice());
+            let buf = hasher.finalize();
+
+            let mut signing_message = [0u8; 32];
+            signing_message.copy_from_slice(&buf[..]);
+
+            signing_message
+        };
+
+        let signature = {
+            let mut signature = self.wallet.sign_message(signing_message)?;
+            let v = &mut signature[64];
+            if *v >= 27 {
+                *v -= 27
+            }
+            signature
+        };
+
+        let tx = L2Transaction::new_builder()
+            .raw(raw_l2tx)
+            .signature(signature.pack())
+            .build();
+
+        self.mem_pool.lock().push_transaction(tx)?;
+
+        let hex_eth_address = hex::encode(&to_eth_address);
+        log::info!("transfer {} to {}", amount, hex_eth_address);
+
+        Ok(())
+    }
+
+    fn l2_account_script(&self, eth_address: [u8; 20]) -> Script {
         let allowed_scripts_config = &self.block_producer_config.allowed_scripts_config;
         let rollup_type_hash = self.rollup_context.rollup_script_hash.as_slice().iter();
         let eth_account_lock_hash = allowed_scripts_config.eth_account_lock_hash.clone().0;
@@ -384,4 +465,16 @@ fn get_account_id<S: State>(state: &S, l2_account_script: &Script) -> Result<u32
     let l2_account_script_hash: H256 = l2_account_script.hash().into();
     let id = state.get_account_id_by_script_hash(&l2_account_script_hash)?;
     Ok(id.ok_or_else(|| anyhow!("account not found"))?)
+}
+
+fn to_tip_block_number(event: &ChainEvent) -> u64 {
+    let tip_block = match event {
+        ChainEvent::Reverted {
+            old_tip: _,
+            new_block,
+        } => new_block,
+        ChainEvent::NewBlock { block } => block,
+    };
+    let header = tip_block.header();
+    header.raw().number().unpack()
 }
