@@ -857,7 +857,6 @@ impl BlockProducer {
                         type_.code_hash(),
                         type_.hash_type()
                     );
-                    continue;
                 }
             }
         }
