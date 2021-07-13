@@ -172,20 +172,21 @@ pub fn generate_config(
         args: gw_jsonrpc_types::ckb_jsonrpc_types::JsonBytes::default(),
     };
 
-    let debug_burn_lock_dep = {
-        let dep: ckb_types::packed::CellDep =
-            scripts_results.always_success.cell_dep.clone().into();
-        gw_types::packed::CellDep::new_unchecked(dep.as_bytes()).into()
-    };
-    let debug_burn_lock_script_hash = scripts_results.always_success.script_type_hash.clone();
     let debug_burn_lock = gw_jsonrpc_types::blockchain::Script {
-        code_hash: debug_burn_lock_script_hash,
-        hash_type: gw_jsonrpc_types::blockchain::ScriptHashType::Type,
+        code_hash: ckb_fixed_hash::H256::default(),
+        hash_type: gw_jsonrpc_types::blockchain::ScriptHashType::Data,
         args: gw_jsonrpc_types::ckb_jsonrpc_types::JsonBytes::default(),
     };
     let debug_burn_config = DebugBurnConfig {
-        burn_lock: debug_burn_lock,
-        burn_lock_dep: debug_burn_lock_dep,
+        burn_lock: debug_burn_lock.clone(),
+        burn_lock_dep: Default::default(),
+    };
+
+    let rewards_lock_type_script_hash = scripts_results.always_success.script_type_hash.clone();
+    let rewards_lock = gw_jsonrpc_types::blockchain::Script {
+        code_hash: rewards_lock_type_script_hash,
+        hash_type: gw_jsonrpc_types::blockchain::ScriptHashType::Type,
+        args: gw_jsonrpc_types::ckb_jsonrpc_types::JsonBytes::default(),
     };
 
     // Allowed eoa script deps
@@ -196,7 +197,7 @@ pub fn generate_config(
         gw_types::packed::CellDep::new_unchecked(dep.as_bytes()).into()
     };
     allowed_eoa_deps.insert(
-        scripts_results.eth_account_lock.script_type_hash,
+        scripts_results.eth_account_lock.script_type_hash.clone(),
         eth_account_lock_dep,
     );
 
@@ -239,6 +240,10 @@ pub fn generate_config(
     let challenger_config = ChallengerConfig {
         rewards_receiver_lock: gw_types::packed::Script::default().into(),
         burn_lock: gw_types::packed::Script::default().into(),
+    };
+    let challenger_config = ChallengerConfig {
+        rewards_receiver_lock: rewards_lock,
+        burn_lock: debug_burn_lock,
     };
 
     let allowed_scripts_config: AllowedScriptsConfig = {

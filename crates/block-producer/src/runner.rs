@@ -366,7 +366,7 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
     let test_bot = TestBot::create(
         store.clone(),
         mem_pool.clone(),
-        rollup_context,
+        rollup_context.clone(),
         rpc_client.clone(),
         config
             .block_producer
