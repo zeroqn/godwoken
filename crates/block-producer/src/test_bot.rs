@@ -99,13 +99,15 @@ impl TestBot {
         let l2_finalized_sudt_balance = self.get_finalized_sudt_balance()?;
         let l2_finalized_ckb_balance = self.get_finalized_ckb_balance()?;
         if l2_sudt_balance < 10_000 {
-            self.deposit_sudt(10_000, 1000).await?; // addition for custodian and withdrawal cell
+            self.deposit_sudt(10_000, 265).await?; // addition for custodian and withdrawal cell
             async_std::task::sleep(Duration::new(3, 0)).await;
         }
         if l2_ckb_balance < 2000u128 * 100_000_000 {
             self.deposit_sudt(1, 10_000).await?;
             async_std::task::sleep(Duration::new(3, 0)).await;
         }
+        self.deposit_ckb(234u64).await?; // min 234 ckb
+        async_std::task::sleep(Duration::new(3, 0)).await;
 
         if l2_sudt_balance >= 1000
             && l2_ckb_balance > 2000 * 100_000_000
@@ -114,7 +116,23 @@ impl TestBot {
             && self.last_block_number % 2 != 0
             && !self.duplicate_withdrawal
         {
-            match self.withdrawal_sudt(100, 400) {
+            match self.withdrawal_sudt(100, 314) {
+                Err(err) if err.to_string().contains("duplicate") => {
+                    self.duplicate_withdrawal = true
+                }
+                Ok(()) => self.duplicate_withdrawal = false,
+                Err(err) => return Err(err),
+            }
+        }
+
+        if l2_sudt_balance >= 1000
+            && l2_ckb_balance > 2000 * 100_000_000
+            && l2_finalized_sudt_balance > 100
+            && l2_finalized_ckb_balance > 2000 * 100_000_000
+            && self.last_block_number % 2 == 0
+            && !self.duplicate_withdrawal
+        {
+            match self.withdrawal_ckb(265) {
                 Err(err) if err.to_string().contains("duplicate") => {
                     self.duplicate_withdrawal = true
                 }
@@ -229,7 +247,58 @@ impl TestBot {
         Ok(balance)
     }
 
-    async fn deposit_sudt(&self, amount: u128, addition_capacity_ckb: u64) -> Result<()> {
+    async fn deposit_ckb(&self, capacity: u64) -> Result<()> {
+        let deposit_lock = {
+            let rollup_type_hash = self.rollup_context.rollup_script_hash.as_slice().iter();
+            let layer2_lock = self.l2_account_script(self.wallet.eth_address());
+            let lock_args = {
+                let owner_lock_script: Script = self.wallet.lock_script().to_owned();
+                DepositLockArgs::new_builder()
+                    .owner_lock_hash(owner_lock_script.hash().pack())
+                    .layer2_lock(layer2_lock)
+                    .cancel_timeout(100u64.pack())
+                    .build()
+            };
+
+            let args: Bytes = rollup_type_hash
+                .chain(lock_args.as_slice().iter())
+                .cloned()
+                .collect();
+
+            Script::new_builder()
+                .code_hash(self.rollup_context.rollup_config.deposit_script_type_hash())
+                .hash_type(ScriptHashType::Type.into())
+                .args(args.pack())
+                .build()
+        };
+
+        let mut tx_skeleton = TransactionSkeleton::default();
+
+        let deposit = CellOutput::new_builder()
+            .capacity((capacity * 100_000_000).pack())
+            .lock(deposit_lock)
+            .build();
+        let min_cap = deposit.occupied_capacity(0).unwrap();
+        if min_cap > capacity * 100_000_000 {
+            return Err(anyhow!("deposit ckb not enough, required {}", min_cap));
+        }
+
+        let output = (deposit, Bytes::new());
+        tx_skeleton.outputs_mut().push(output);
+
+        let owner_lock_dep = self.ckb_genesis_info.sighash_dep();
+        let owner_lock = self.wallet.lock_script().to_owned();
+        tx_skeleton.cell_deps_mut().push(owner_lock_dep);
+
+        fill_tx_fee(&mut tx_skeleton, &self.rpc_client, owner_lock).await?;
+        let tx = self.wallet.sign_tx_skeleton(tx_skeleton)?;
+        let tx_hash = self.rpc_client.send_transaction(tx).await?;
+        log::info!("deposit ckb in {}", hex::encode(&tx_hash.as_slice()));
+
+        Ok(())
+    }
+
+    async fn deposit_sudt(&self, amount: u128, capacity: u64) -> Result<()> {
         let l1_sudt_script: Script = self.block_producer_config.l1_sudt_script.clone().into();
 
         let deposit_lock = {
@@ -258,9 +327,6 @@ impl TestBot {
 
         let mut tx_skeleton = TransactionSkeleton::default();
 
-        let size = 8 + 16 + l1_sudt_script.as_slice().len() + deposit_lock.as_slice().len();
-        let capacity = (size as u64 + addition_capacity_ckb) * 100_000_000;
-
         let deposit = CellOutput::new_builder()
             .capacity(capacity.pack())
             .type_(Some(l1_sudt_script).pack())
@@ -284,6 +350,73 @@ impl TestBot {
         Ok(())
     }
 
+    fn withdrawal_ckb(&self, capacity: u64) -> Result<()> {
+        let db = self.store.begin_transaction();
+        let state_db = self.tip_statedb(&db)?;
+        let state = state_db.account_state_tree()?;
+
+        let l2_account_script = self.l2_account_script(self.wallet.eth_address());
+        let l2_account_id = get_account_id(&state, &l2_account_script)?;
+        let raw_withdrawal = {
+            let nonce = state.get_nonce(l2_account_id)?;
+            let capacity = capacity * 100_000_000; // Enough to hold withdrawal cell
+            let account_script_hash = l2_account_script.hash();
+            let owner_lock_hash = self.wallet.lock_script().hash();
+            let fee = {
+                let sudt_id = get_account_id(&state, &self.l2_sudt_script())?;
+                let amount = 1u128;
+                Fee::new_builder()
+                    .sudt_id(sudt_id.pack())
+                    .amount(amount.pack())
+                    .build()
+            };
+
+            RawWithdrawalRequest::new_builder()
+                .nonce(nonce.pack())
+                .capacity(capacity.pack())
+                .account_script_hash(account_script_hash.pack())
+                .sell_amount(0u128.pack())
+                .sell_capacity(0u64.pack())
+                .owner_lock_hash(owner_lock_hash.pack())
+                .payment_lock_hash(owner_lock_hash.pack())
+                .fee(fee)
+                .build()
+        };
+
+        let signing_message = {
+            let message = raw_withdrawal.calc_message(&self.rollup_context.rollup_script_hash);
+
+            let mut hasher = Keccak256::new();
+            hasher.update("\x19Ethereum Signed Message:\n32");
+            hasher.update(message.as_slice());
+            let buf = hasher.finalize();
+
+            let mut signing_message = [0u8; 32];
+            signing_message.copy_from_slice(&buf[..]);
+
+            signing_message
+        };
+
+        let signature = {
+            let mut signature = self.wallet.sign_message(signing_message)?;
+            let v = &mut signature[64];
+            if *v >= 27 {
+                *v -= 27
+            }
+            signature
+        };
+
+        let withdrawal = WithdrawalRequest::new_builder()
+            .raw(raw_withdrawal)
+            .signature(signature.pack())
+            .build();
+
+        self.mem_pool.lock().push_withdrawal_request(withdrawal)?;
+        log::info!("withdrawal ckb {}", capacity);
+
+        Ok(())
+    }
+
     fn withdrawal_sudt(&self, amount: u128, capacity_ckb: u64) -> Result<()> {
         let db = self.store.begin_transaction();
         let state_db = self.tip_statedb(&db)?;
@@ -293,7 +426,7 @@ impl TestBot {
         let l2_account_id = get_account_id(&state, &l2_account_script)?;
         let raw_withdrawal = {
             let nonce = state.get_nonce(l2_account_id)?;
-            let capacity = capacity_ckb * 100_000_000; // Enought to hold withdrawal cell
+            let capacity = capacity_ckb * 100_000_000; // Enough to hold withdrawal cell
             let l1_sudt_script: Script = self.block_producer_config.l1_sudt_script.clone().into();
             let account_script_hash = l2_account_script.hash();
             let owner_lock_hash = self.wallet.lock_script().hash();
