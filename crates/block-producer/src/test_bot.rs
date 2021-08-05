@@ -99,15 +99,13 @@ impl TestBot {
         let l2_finalized_sudt_balance = self.get_finalized_sudt_balance()?;
         let l2_finalized_ckb_balance = self.get_finalized_ckb_balance()?;
         if l2_sudt_balance < 10_000 {
-            self.deposit_sudt(10_000, 265).await?; // addition for custodian and withdrawal cell
+            self.deposit_sudt(10_000, 371).await?; // addition for custodian and withdrawal cell
             async_std::task::sleep(Duration::new(3, 0)).await;
         }
         if l2_ckb_balance < 2000u128 * 100_000_000 {
             self.deposit_sudt(1, 10_000).await?;
             async_std::task::sleep(Duration::new(3, 0)).await;
         }
-        self.deposit_ckb(234u64).await?; // min 234 ckb
-        async_std::task::sleep(Duration::new(3, 0)).await;
 
         if l2_sudt_balance >= 1000
             && l2_ckb_balance > 2000 * 100_000_000
@@ -116,23 +114,7 @@ impl TestBot {
             && self.last_block_number % 2 != 0
             && !self.duplicate_withdrawal
         {
-            match self.withdrawal_sudt(100, 314) {
-                Err(err) if err.to_string().contains("duplicate") => {
-                    self.duplicate_withdrawal = true
-                }
-                Ok(()) => self.duplicate_withdrawal = false,
-                Err(err) => return Err(err),
-            }
-        }
-
-        if l2_sudt_balance >= 1000
-            && l2_ckb_balance > 2000 * 100_000_000
-            && l2_finalized_sudt_balance > 100
-            && l2_finalized_ckb_balance > 2000 * 100_000_000
-            && self.last_block_number % 2 == 0
-            && !self.duplicate_withdrawal
-        {
-            match self.withdrawal_ckb(265) {
+            match self.withdrawal_sudt(100, 346) {
                 Err(err) if err.to_string().contains("duplicate") => {
                     self.duplicate_withdrawal = true
                 }
@@ -328,7 +310,7 @@ impl TestBot {
         let mut tx_skeleton = TransactionSkeleton::default();
 
         let deposit = CellOutput::new_builder()
-            .capacity(capacity.pack())
+            .capacity((capacity * 100_000_000).pack())
             .type_(Some(l1_sudt_script).pack())
             .lock(deposit_lock)
             .build();
