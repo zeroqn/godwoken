@@ -100,8 +100,7 @@ pub fn generate_config(
         .code_hash(code_hash.pack())
         .hash_type(ScriptHashType::Type.into())
         .args(args.pack())
-        .build()
-        .into();
+        .build();
 
     let rollup_config = genesis.rollup_config.clone();
     let rollup_type_hash = genesis.rollup_type_hash;
@@ -169,7 +168,7 @@ pub fn generate_config(
     let l1_sudt_script = gw_jsonrpc_types::blockchain::Script {
         code_hash: l1_sudt_type_script_hash,
         hash_type: gw_jsonrpc_types::blockchain::ScriptHashType::Type,
-        args: gw_jsonrpc_types::ckb_jsonrpc_types::JsonBytes::default(),
+        args: gw_jsonrpc_types::ckb_jsonrpc_types::JsonBytes::from_vec(lock.hash().to_vec()),
     };
 
     let debug_burn_lock = gw_jsonrpc_types::blockchain::Script {
@@ -237,7 +236,7 @@ pub fn generate_config(
         polyjuice_validator_dep,
     );
 
-    let challenger_config = ChallengerConfig {
+    let _challenger_config = ChallengerConfig {
         rewards_receiver_lock: gw_types::packed::Script::default().into(),
         burn_lock: gw_types::packed::Script::default().into(),
     };
@@ -265,7 +264,7 @@ pub fn generate_config(
 
     let wallet_config: WalletConfig = WalletConfig {
         privkey_path: privkey_path.into(),
-        lock,
+        lock: lock.into(),
     };
 
     let mut backends: Vec<BackendConfig> = Vec::new();
