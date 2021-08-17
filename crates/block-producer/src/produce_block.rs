@@ -4,7 +4,10 @@
 
 use std::collections::HashMap;
 
-use crate::withdrawal::AvailableCustodians;
+use crate::{
+    challenger::offchain::{OffChainCancelChallengeValidator, OffChainContext},
+    withdrawal::AvailableCustodians,
+};
 
 use anyhow::{anyhow, Result};
 use gw_common::{
@@ -52,6 +55,7 @@ pub struct ProduceBlockParam<'a> {
     pub rollup_config_hash: &'a H256,
     pub max_withdrawal_capacity: u128,
     pub available_custodians: AvailableCustodians,
+    pub offchain_context: OffChainContext,
 }
 
 /// Produce block
@@ -73,6 +77,7 @@ pub fn produce_block(param: ProduceBlockParam<'_>) -> Result<ProduceBlockResult>
         max_withdrawal_capacity,
         stake_cell_owner_lock_hash,
         available_custodians,
+        offchain_context,
     } = param;
     let rollup_context = generator.rollup_context();
     let parent_block_number: u64 = parent_block.raw().number().unpack();
@@ -105,6 +110,8 @@ pub fn produce_block(param: ProduceBlockParam<'_>) -> Result<ProduceBlockResult>
     let mut state_checkpoint_list: Vec<H256> = Vec::new();
     let mut withdrawal_verifier =
         crate::withdrawal::Generator::new(rollup_context, available_custodians);
+    let mut offchain_cancel_challenge_validator =
+        OffChainCancelChallengeValidator::new(offchain_context, &parent_block, reverted_block_root);
     for request in withdrawal_requests {
         // check withdrawal request
         if let Err(err) = generator.check_withdrawal_request_signature(&state, &request) {
@@ -145,6 +152,19 @@ pub fn produce_block(param: ProduceBlockParam<'_>) -> Result<ProduceBlockResult>
             continue;
         }
 
+        if let Err(err) = offchain_cancel_challenge_validator.validate_withdrawal_request(
+            &db,
+            &state_db,
+            request.clone(),
+        ) {
+            log::info!(
+                "[produce_block] withdrawal offchain cancel challenge failed: {}",
+                err
+            );
+            unused_withdrawal_requests.push(request);
+            continue;
+        }
+
         // update the state
         match state.apply_withdrawal_request(rollup_context, block_producer_id, &request) {
             Ok(_) => {
@@ -161,6 +181,7 @@ pub fn produce_block(param: ProduceBlockParam<'_>) -> Result<ProduceBlockResult>
     state.apply_deposit_requests(rollup_context, &deposit_requests)?;
     // calculate state after withdrawals & deposits
     let prev_state_check_point = state.calculate_state_checkpoint()?;
+    offchain_cancel_challenge_validator.set_prev_txs_checkpoint(prev_state_check_point.clone());
     state.tracker_mut().disable();
     // execute txs
     let mut tx_receipts = Vec::with_capacity(txs.len());
@@ -204,6 +225,23 @@ pub fn produce_block(param: ProduceBlockParam<'_>) -> Result<ProduceBlockResult>
                     continue;
                 }
             };
+
+        if let Err(err) = offchain_cancel_challenge_validator.validate_tx(
+            &db,
+            &state_db,
+            tx.clone(),
+            &run_result,
+        ) {
+            log::info!(
+                "[produce_block] execute tx {} error: {:?}",
+                hex::encode(&tx.hash()),
+                err
+            );
+
+            unused_transactions.push(tx);
+            continue;
+        }
+
         // 3. apply tx state
         state.apply_run_result(&run_result)?;
         // 4. build tx receipt
@@ -227,8 +265,9 @@ pub fn produce_block(param: ProduceBlockParam<'_>) -> Result<ProduceBlockResult>
                     .collect::<Vec<_>>()
                     .pack(),
             )
-            .logs(run_result.logs.pack())
+            .logs(run_result.logs.clone().pack())
             .build();
+
         used_transactions.push(tx);
         tx_receipts.push(receipt);
         l2tx_offchain_used_cycles =

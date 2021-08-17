@@ -23,10 +23,14 @@ gw-mem-pool = { path = "../mem-pool" }
 gw-jsonrpc-types = { path = "../jsonrpc-types" }
 gw-rpc-server = { path = "../rpc-server" }
 gw-web3-indexer = { path = "../web3-indexer" }
+gw-traits = { path = "../traits" }
 faster-hex = "0.4"
 ckb-crypto = "0.38.0"
 ckb-fixed-hash = "0.38.0"
 ckb-types = "0.38.0"
+ckb-script = "0.38.0"
+ckb-traits = "0.38.0"
+ckb-chain-spec = "0.38.0"
 toml = "0.5"
 parking_lot = "0.11"
 anyhow = "1.0"
@@ -47,3 +51,4 @@ sqlx = { version = "0.5", features = [ "runtime-async-std-native-tls", "postgres
 hex = "0.4"
 async-trait = "0.1"
 semver = "1.0"
+rand = "0.8"

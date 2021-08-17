@@ -1,6 +1,7 @@
 #![allow(clippy::clippy::mutable_key_type)]
 
 use crate::{
+    challenger::offchain::OffChainContext,
     poa::{PoA, ShouldIssueBlock},
     produce_block::{produce_block, ProduceBlockParam, ProduceBlockResult},
     rpc_client::{DepositInfo, RPCClient},
@@ -186,6 +187,7 @@ pub struct BlockProducer {
     debug_config: DebugConfig,
     rpc_client: RPCClient,
     ckb_genesis_info: CKBGenesisInfo,
+    offchain_context: OffChainContext,
     tests_control: Option<TestModeControl>,
 }
 
@@ -201,6 +203,7 @@ impl BlockProducer {
         ckb_genesis_info: CKBGenesisInfo,
         config: BlockProducerConfig,
         debug_config: DebugConfig,
+        offchain_context: OffChainContext,
         tests_control: Option<TestModeControl>,
     ) -> Result<Self> {
         let wallet = Wallet::from_config(&config.wallet_config).with_context(|| "init wallet")?;
@@ -223,6 +226,7 @@ impl BlockProducer {
             ckb_genesis_info,
             config,
             debug_config,
+            offchain_context,
             tests_control,
         };
         Ok(block_producer)
@@ -405,6 +409,7 @@ impl BlockProducer {
             rollup_config_hash: &self.rollup_config_hash,
             max_withdrawal_capacity,
             available_custodians,
+            offchain_context: self.offchain_context.clone(),
         };
         let block_result = produce_block(param)?;
         let ProduceBlockResult {
