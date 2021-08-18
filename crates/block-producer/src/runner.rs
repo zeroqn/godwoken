@@ -50,7 +50,7 @@ const DEFAULT_RUNTIME_THREADS: usize = 4;
 
 async fn poll_loop(
     rpc_client: RPCClient,
-    test_bot: TestBot,
+    test_bot: Option<TestBot>,
     chain_updater: ChainUpdater,
     block_producer: Option<BlockProducer>,
     challenger: Option<Challenger>,
@@ -59,7 +59,7 @@ async fn poll_loop(
 ) -> Result<()> {
     struct Inner {
         chain_updater: ChainUpdater,
-        test_bot: TestBot,
+        test_bot: Option<TestBot>,
         block_producer: Option<BlockProducer>,
         challenger: Option<Challenger>,
         cleaner: Option<Arc<Cleaner>>,
@@ -84,11 +84,11 @@ async fn poll_loop(
             let raw_header = block.header().raw();
             let event = if raw_header.parent_hash().as_slice() == tip_hash.as_slice() {
                 // received new layer1 block
-                log::info!(
+                /* log::info!(
                     "received new layer1 block {}, {}",
                     tip_number,
                     hex::encode(tip_hash.as_slice())
-                );
+                ); */
                 ChainEvent::NewBlock {
                     block: block.clone(),
                 }
@@ -129,12 +129,14 @@ async fn poll_loop(
                 }
             }
 
-            if let Err(err) = inner.test_bot.handle_event(&event).await {
-                log::error!(
-                    "Error occured when polling test bot, event: {:?}, error: {}",
-                    event,
-                    err
-                );
+            if let Some(ref mut test_bot) = inner.test_bot {
+                if let Err(err) = smol::block_on(test_bot.handle_event(&event)) {
+                    log::error!(
+                        "Error occured when polling test bot, event: {:?}, error: {}",
+                        event,
+                        err
+                    );
+                }
             }
 
             if let Some(ref mut block_producer) = inner.block_producer {
@@ -363,101 +365,105 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
         CKBGenesisInfo::from_block(&ckb_genesis)?
     };
 
-    let test_bot = TestBot::create(
-        store.clone(),
-        mem_pool.clone(),
-        rollup_context.clone(),
-        rpc_client.clone(),
-        config
-            .block_producer
-            .clone()
-            .ok_or_else(|| anyhow!("not set block producer"))?,
-        ckb_genesis_info.clone(),
-    )?;
+    let (block_producer, challenger, test_mode_control, cleaner, test_bot) =
+        match config.node_mode {
+            NodeMode::ReadOnly => (None, None, None, None, None),
+            mode => {
+                let block_producer_config = config.block_producer.clone().ok_or_else(|| {
+                    anyhow!("must provide block producer config in mode: {:?}", mode)
+                })?;
+                let mem_pool = mem_pool
+                    .clone()
+                    .ok_or_else(|| anyhow!("mem-pool must be enabled in mode: {:?}", mode))?;
+                let wallet =
+                    wallet.ok_or_else(|| anyhow!("wallet must be enabled in mode: {:?}", mode))?;
+                let poa = poa.ok_or_else(|| anyhow!("poa must be enabled in mode: {:?}, mode"))?;
+                let tests_control = if let NodeMode::Test = config.node_mode {
+                    Some(TestModeControl::new(
+                        rpc_client.clone(),
+                        Arc::clone(&poa),
+                        store.clone(),
+                    ))
+                } else {
+                    None
+                };
 
-    let (block_producer, challenger, test_mode_control, cleaner) = match config.node_mode {
-        NodeMode::ReadOnly => (None, None, None, None),
-        mode => {
-            let block_producer_config = config
-                .block_producer
-                .clone()
-                .ok_or_else(|| anyhow!("must provide block producer config in mode: {:?}", mode))?;
-            let mem_pool = mem_pool
-                .clone()
-                .ok_or_else(|| anyhow!("mem-pool must be enabled in mode: {:?}", mode))?;
-            let wallet =
-                wallet.ok_or_else(|| anyhow!("wallet must be enabled in mode: {:?}", mode))?;
-            let poa = poa.ok_or_else(|| anyhow!("poa must be enabled in mode: {:?}", mode))?;
-            let tests_control = if let NodeMode::Test = config.node_mode {
-                Some(TestModeControl::new(
-                    rpc_client.clone(),
-                    Arc::clone(&poa),
+                let mem_pool_provider =
+                    DefaultMemPoolProvider::new(rpc_client.clone(), Arc::clone(&poa));
+                let test_bot = TestBot::create(
                     store.clone(),
-                ))
-            } else {
-                None
-            };
+                    mem_pool.clone(),
+                    Box::new(mem_pool_provider),
+                    rollup_context.clone(),
+                    rpc_client.clone(),
+                    config
+                        .block_producer
+                        .clone()
+                        .ok_or_else(|| anyhow!("not set block producer"))?,
+                    ckb_genesis_info.clone(),
+                )?;
 
-            // Block Producer
-            let block_producer = BlockProducer::create(
-                rollup_config_hash,
-                store.clone(),
-                generator.clone(),
-                Arc::clone(&chain),
-                mem_pool,
-                rpc_client.clone(),
-                ckb_genesis_info.clone(),
-                block_producer_config.clone(),
-                config.debug.clone(),
-                tests_control.clone(),
-            )
-            .with_context(|| "init block producer")?;
+                // Block Producer
+                let block_producer = BlockProducer::create(
+                    rollup_config_hash,
+                    store.clone(),
+                    generator.clone(),
+                    Arc::clone(&chain),
+                    mem_pool.clone(),
+                    rpc_client.clone(),
+                    ckb_genesis_info.clone(),
+                    block_producer_config.clone(),
+                    config.debug.clone(),
+                    tests_control.clone(),
+                )
+                .with_context(|| "init block producer")?;
 
-            let cleaner = Arc::new(Cleaner::new(
-                rpc_client.clone(),
-                ckb_genesis_info.clone(),
-                wallet,
-            ));
+                let cleaner = Arc::new(Cleaner::new(
+                    rpc_client.clone(),
+                    ckb_genesis_info.clone(),
+                    wallet,
+                ));
 
-            let wallet = Wallet::from_config(&block_producer_config.wallet_config)
-                .with_context(|| "init wallet")?;
+                let wallet = Wallet::from_config(&block_producer_config.wallet_config)
+                    .with_context(|| "init wallet")?;
 
-            // Challenger
-            let to_hash = |data| -> [u8; 32] {
-                let mut hasher = new_blake2b();
-                hasher.update(data);
-                let mut hash = [0u8; 32];
-                hasher.finalize(&mut hash);
-                hash
-            };
-            let mut builtin_load_data = HashMap::new();
-            builtin_load_data.insert(
-                to_hash(secp_data.as_ref()).into(),
-                config.genesis.secp_data_dep.clone().into(),
-            );
+                // Challenger
+                let to_hash = |data| -> [u8; 32] {
+                    let mut hasher = new_blake2b();
+                    hasher.update(data);
+                    let mut hash = [0u8; 32];
+                    hasher.finalize(&mut hash);
+                    hash
+                };
+                let mut builtin_load_data = HashMap::new();
+                builtin_load_data.insert(
+                    to_hash(secp_data.as_ref()).into(),
+                    config.genesis.secp_data_dep.clone().into(),
+                );
 
-            let challenger = Challenger::new(
-                rollup_context,
-                rpc_client.clone(),
-                wallet,
-                block_producer_config,
-                config.debug.clone(),
-                builtin_load_data,
-                ckb_genesis_info,
-                Arc::clone(&chain),
-                Arc::clone(&poa),
-                tests_control.clone(),
-                Arc::clone(&cleaner),
-            );
+                let challenger = Challenger::new(
+                    rollup_context,
+                    rpc_client.clone(),
+                    wallet,
+                    block_producer_config,
+                    config.debug.clone(),
+                    builtin_load_data,
+                    ckb_genesis_info,
+                    Arc::clone(&chain),
+                    Arc::clone(&poa),
+                    tests_control.clone(),
+                    Arc::clone(&cleaner),
+                );
 
-            (
-                Some(block_producer),
-                Some(challenger),
-                tests_control,
-                Some(cleaner),
-            )
-        }
-    };
+                (
+                    Some(block_producer),
+                    Some(challenger),
+                    tests_control,
+                    Some(cleaner),
+                    Some(test_bot),
+                )
+            }
+        };
 
     // RPC registry
     let rpc_registry = Registry::new(

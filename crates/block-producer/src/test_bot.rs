@@ -2,15 +2,17 @@ use anyhow::{anyhow, Context, Result};
 use ckb_types::prelude::{Builder, Entity};
 use gw_common::builtins::CKB_SUDT_ACCOUNT_ID;
 use gw_common::state::{to_short_address, State};
-use gw_common::{CKB_SUDT_SCRIPT_ARGS, H256};
+use gw_common::H256;
 use gw_config::BlockProducerConfig;
-use gw_generator::RollupContext;
 use gw_mem_pool::pool::MemPool;
+use gw_mem_pool::traits::MemPoolProvider;
+use gw_rpc_client::RPCClient;
 use gw_store::state_db::{CheckPoint, StateDBMode, StateDBTransaction, SubState};
 use gw_store::transaction::StoreTransaction;
 use gw_store::Store;
 use gw_types::bytes::Bytes;
 use gw_types::core::{ScriptHashType, Status};
+use gw_types::offchain::RollupContext;
 use gw_types::packed::{
     CellDep, CellOutput, DepositLockArgs, Fee, GlobalState, L2Transaction, RawL2Transaction,
     RawWithdrawalRequest, SUDTArgs, SUDTTransfer, Script, WithdrawalRequest,
@@ -18,7 +20,6 @@ use gw_types::packed::{
 use gw_types::prelude::{Pack, Unpack};
 use sha3::{Digest, Keccak256};
 
-use crate::rpc_client::RPCClient;
 use crate::transaction_skeleton::TransactionSkeleton;
 use crate::types::ChainEvent;
 use crate::utils::{fill_tx_fee, CKBGenesisInfo};
@@ -31,6 +32,7 @@ use std::time::Duration;
 pub struct TestBot {
     store: Store,
     mem_pool: Arc<parking_lot::Mutex<MemPool>>,
+    mem_provider: Box<dyn MemPoolProvider + Send>,
     rollup_context: RollupContext,
     rpc_client: RPCClient,
     wallet: Wallet,
@@ -45,6 +47,7 @@ impl TestBot {
     pub fn create(
         store: Store,
         mem_pool: Arc<parking_lot::Mutex<MemPool>>,
+        mem_provider: Box<dyn MemPoolProvider + Send>,
         rollup_context: RollupContext,
         rpc_client: RPCClient,
         block_producer_config: BlockProducerConfig,
@@ -56,6 +59,7 @@ impl TestBot {
         let chaos = TestBot {
             store,
             mem_pool,
+            mem_provider,
             rollup_context,
             rpc_client,
             wallet,
@@ -195,7 +199,7 @@ impl TestBot {
     fn get_l2_sudt_balance(&self, account_script: &Script) -> Result<u128> {
         let db = self.store.begin_transaction();
         let tip_statedb = self.tip_statedb(&db)?;
-        let state = tip_statedb.account_state_tree()?;
+        let state = tip_statedb.state_tree()?;
 
         let l2_sudt_script_hash: H256 = self.l2_sudt_script().hash().into();
         if !has_l2_sudt(&state, &l2_sudt_script_hash)? {
@@ -216,7 +220,7 @@ impl TestBot {
     fn get_l2_ckb_balance(&self) -> Result<u128> {
         let db = self.store.begin_transaction();
         let tip_statedb = self.tip_statedb(&db)?;
-        let state = tip_statedb.account_state_tree()?;
+        let state = tip_statedb.state_tree()?;
 
         let l2_lock_hash = {
             let l2_lock = self.l2_account_script(self.wallet.eth_address());
@@ -334,35 +338,38 @@ impl TestBot {
 
     fn withdrawal_ckb(&self, capacity: u64) -> Result<()> {
         let db = self.store.begin_transaction();
-        let state_db = self.tip_statedb(&db)?;
-        let state = state_db.account_state_tree()?;
-
-        let l2_account_script = self.l2_account_script(self.wallet.eth_address());
-        let l2_account_id = get_account_id(&state, &l2_account_script)?;
         let raw_withdrawal = {
-            let nonce = state.get_nonce(l2_account_id)?;
-            let capacity = capacity * 100_000_000; // Enough to hold withdrawal cell
-            let account_script_hash = l2_account_script.hash();
-            let owner_lock_hash = self.wallet.lock_script().hash();
-            let fee = {
-                let sudt_id = get_account_id(&state, &self.l2_sudt_script())?;
-                let amount = 1u128;
-                Fee::new_builder()
-                    .sudt_id(sudt_id.pack())
-                    .amount(amount.pack())
+            let state_db = self.mem_pool.lock().fetch_state_db(&db)?;
+            let state = state_db.state_tree()?;
+
+            let l2_account_script = self.l2_account_script(self.wallet.eth_address());
+            let l2_account_id = get_account_id(&state, &l2_account_script)?;
+            let raw_withdrawal = {
+                let nonce = state.get_nonce(l2_account_id)?;
+                let capacity = capacity * 100_000_000; // Enough to hold withdrawal cell
+                let account_script_hash = l2_account_script.hash();
+                let owner_lock_hash = self.wallet.lock_script().hash();
+                let fee = {
+                    let sudt_id = get_account_id(&state, &self.l2_sudt_script())?;
+                    let amount = 1u128;
+                    Fee::new_builder()
+                        .sudt_id(sudt_id.pack())
+                        .amount(amount.pack())
+                        .build()
+                };
+
+                RawWithdrawalRequest::new_builder()
+                    .nonce(nonce.pack())
+                    .capacity(capacity.pack())
+                    .account_script_hash(account_script_hash.pack())
+                    .sell_amount(0u128.pack())
+                    .sell_capacity(0u64.pack())
+                    .owner_lock_hash(owner_lock_hash.pack())
+                    .payment_lock_hash(owner_lock_hash.pack())
+                    .fee(fee)
                     .build()
             };
-
-            RawWithdrawalRequest::new_builder()
-                .nonce(nonce.pack())
-                .capacity(capacity.pack())
-                .account_script_hash(account_script_hash.pack())
-                .sell_amount(0u128.pack())
-                .sell_capacity(0u64.pack())
-                .owner_lock_hash(owner_lock_hash.pack())
-                .payment_lock_hash(owner_lock_hash.pack())
-                .fee(fee)
-                .build()
+            raw_withdrawal
         };
 
         let signing_message = {
@@ -401,38 +408,43 @@ impl TestBot {
 
     fn withdrawal_sudt(&self, amount: u128, capacity_ckb: u64) -> Result<()> {
         let db = self.store.begin_transaction();
-        let state_db = self.tip_statedb(&db)?;
-        let state = state_db.account_state_tree()?;
-
-        let l2_account_script = self.l2_account_script(self.wallet.eth_address());
-        let l2_account_id = get_account_id(&state, &l2_account_script)?;
         let raw_withdrawal = {
-            let nonce = state.get_nonce(l2_account_id)?;
-            let capacity = capacity_ckb * 100_000_000; // Enough to hold withdrawal cell
-            let l1_sudt_script: Script = self.block_producer_config.l1_sudt_script.clone().into();
-            let account_script_hash = l2_account_script.hash();
-            let owner_lock_hash = self.wallet.lock_script().hash();
-            let fee = {
-                let sudt_id = get_account_id(&state, &self.l2_sudt_script())?;
-                let amount = 1u128;
-                Fee::new_builder()
-                    .sudt_id(sudt_id.pack())
+            let state_db = self.mem_pool.lock().fetch_state_db(&db)?;
+            let state = state_db.state_tree()?;
+
+            let l2_account_script = self.l2_account_script(self.wallet.eth_address());
+            let l2_account_id = get_account_id(&state, &l2_account_script)?;
+            let raw_withdrawal = {
+                let nonce = state.get_nonce(l2_account_id)?;
+                let capacity = capacity_ckb * 100_000_000; // Enough to hold withdrawal cell
+                let l1_sudt_script: Script =
+                    self.block_producer_config.l1_sudt_script.clone().into();
+                let account_script_hash = l2_account_script.hash();
+                let owner_lock_hash = self.wallet.lock_script().hash();
+                let fee = {
+                    let sudt_id = get_account_id(&state, &self.l2_sudt_script())?;
+                    let amount = 1u128;
+                    Fee::new_builder()
+                        .sudt_id(sudt_id.pack())
+                        .amount(amount.pack())
+                        .build()
+                };
+
+                RawWithdrawalRequest::new_builder()
+                    .nonce(nonce.pack())
+                    .capacity(capacity.pack())
                     .amount(amount.pack())
+                    .sudt_script_hash(l1_sudt_script.hash().pack())
+                    .account_script_hash(account_script_hash.pack())
+                    .sell_amount(0u128.pack())
+                    .sell_capacity(0u64.pack())
+                    .owner_lock_hash(owner_lock_hash.pack())
+                    .payment_lock_hash(owner_lock_hash.pack())
+                    .fee(fee)
                     .build()
             };
 
-            RawWithdrawalRequest::new_builder()
-                .nonce(nonce.pack())
-                .capacity(capacity.pack())
-                .amount(amount.pack())
-                .sudt_script_hash(l1_sudt_script.hash().pack())
-                .account_script_hash(account_script_hash.pack())
-                .sell_amount(0u128.pack())
-                .sell_capacity(0u64.pack())
-                .owner_lock_hash(owner_lock_hash.pack())
-                .payment_lock_hash(owner_lock_hash.pack())
-                .fee(fee)
-                .build()
+            raw_withdrawal
         };
 
         let signing_message = {
@@ -471,31 +483,36 @@ impl TestBot {
 
     fn l2_sudt_transfer_to(&self, to_eth_address: [u8; 20], amount: u128) -> Result<()> {
         let db = self.store.begin_transaction();
-        let state_db = self.tip_statedb(&db)?;
-        let state = state_db.account_state_tree()?;
-
         let l2_account_script = self.l2_account_script(self.wallet.eth_address());
-        let l2_account_id = get_account_id(&state, &l2_account_script)?;
-        let l2_sudt_id = get_account_id(&state, &self.l2_sudt_script())?;
 
-        let l2_to_account: Script = self.l2_account_script(to_eth_address);
         let raw_l2tx = {
-            let nonce = state.get_nonce(l2_account_id)?;
-            let l2_to_account_hash: H256 = l2_to_account.hash().into();
-            let to_account_short_address = to_short_address(&l2_to_account_hash);
-            let sudt_transfer = SUDTTransfer::new_builder()
-                .to(to_account_short_address.pack())
-                .amount(amount.pack())
-                .fee(1.pack())
-                .build();
-            let sudt_args = SUDTArgs::new_builder().set(sudt_transfer).build();
+            let state_db = self.mem_pool.lock().fetch_state_db(&db)?;
+            let state = state_db.state_tree()?;
 
-            RawL2Transaction::new_builder()
-                .from_id(l2_account_id.pack())
-                .to_id(l2_sudt_id.pack())
-                .nonce(nonce.pack())
-                .args(sudt_args.as_bytes().pack())
-                .build()
+            let l2_account_id = get_account_id(&state, &l2_account_script)?;
+            let l2_sudt_id = get_account_id(&state, &self.l2_sudt_script())?;
+
+            let l2_to_account: Script = self.l2_account_script(to_eth_address);
+            let raw_l2tx = {
+                let nonce = state.get_nonce(l2_account_id)?;
+                let l2_to_account_hash: H256 = l2_to_account.hash().into();
+                let to_account_short_address = to_short_address(&l2_to_account_hash);
+                let sudt_transfer = SUDTTransfer::new_builder()
+                    .to(to_account_short_address.pack())
+                    .amount(amount.pack())
+                    .fee(1.pack())
+                    .build();
+                let sudt_args = SUDTArgs::new_builder().set(sudt_transfer).build();
+
+                RawL2Transaction::new_builder()
+                    .from_id(l2_account_id.pack())
+                    .to_id(l2_sudt_id.pack())
+                    .nonce(nonce.pack())
+                    .args(sudt_args.as_bytes().pack())
+                    .build()
+            };
+
+            raw_l2tx
         };
 
         let signing_message = {
@@ -560,16 +577,70 @@ impl TestBot {
     }
 
     fn get_finalized_sudt_balance(&self) -> Result<u128> {
-        let db = self.store.begin_transaction();
-        let l1_sudt_script: Script = self.block_producer_config.l1_sudt_script.clone().into();
+        let last_finalized_block_number = {
+            let db = self.store.begin_transaction();
+            let tip_block = db.get_tip_block()?;
+            self.rollup_context
+                .last_finalized_block_number(tip_block.raw().number().unpack())
+        };
+        let withdrawal = {
+            let raw_withdrawal = {
+                let l1_sudt_script: Script =
+                    self.block_producer_config.l1_sudt_script.clone().into();
 
-        let balance = db.get_finalized_custodian_asset(l1_sudt_script.hash().into())?;
+                RawWithdrawalRequest::new_builder()
+                    .capacity(u64::MAX.pack())
+                    .amount(u128::MAX.pack())
+                    .sudt_script_hash(l1_sudt_script.hash().pack())
+                    .build()
+            };
+
+            WithdrawalRequest::new_builder().raw(raw_withdrawal).build()
+        };
+        let available_custodians = smol::block_on(self.mem_provider.query_available_custodians(
+            vec![withdrawal],
+            last_finalized_block_number,
+            self.rollup_context.clone(),
+        ))?;
+
+        let l1_sudt_script: Script = self.block_producer_config.l1_sudt_script.clone().into();
+        let balance = available_custodians
+            .sudt
+            .get(&l1_sudt_script.hash())
+            .map(|(amount, _script)| *amount)
+            .unwrap_or_else(|| 0);
+
         Ok(balance)
     }
 
     fn get_finalized_ckb_balance(&self) -> Result<u128> {
-        let db = self.store.begin_transaction();
-        let balance = db.get_finalized_custodian_asset(CKB_SUDT_SCRIPT_ARGS.into())?;
+        let last_finalized_block_number = {
+            let db = self.store.begin_transaction();
+            let tip_block = db.get_tip_block()?;
+            self.rollup_context
+                .last_finalized_block_number(tip_block.raw().number().unpack())
+        };
+        let withdrawal = {
+            let raw_withdrawal = {
+                let l1_sudt_script: Script =
+                    self.block_producer_config.l1_sudt_script.clone().into();
+
+                RawWithdrawalRequest::new_builder()
+                    .capacity(u64::MAX.pack())
+                    .amount(u128::MAX.pack())
+                    .sudt_script_hash(l1_sudt_script.hash().pack())
+                    .build()
+            };
+
+            WithdrawalRequest::new_builder().raw(raw_withdrawal).build()
+        };
+        let available_custodians = smol::block_on(self.mem_provider.query_available_custodians(
+            vec![withdrawal],
+            last_finalized_block_number,
+            self.rollup_context.clone(),
+        ))?;
+
+        let balance = available_custodians.capacity;
         Ok(balance)
     }
 
