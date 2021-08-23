@@ -477,7 +477,7 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
                 );
 
             let challenger = Challenger::new(
-                rollup_context.clone(),
+                rollup_context,
                 rpc_client.clone(),
                 wallet,
                 block_producer_config.clone(),
