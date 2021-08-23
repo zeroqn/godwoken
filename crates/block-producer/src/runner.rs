@@ -413,7 +413,7 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
     );
 
     let (block_producer, challenger, test_mode_control, cleaner, test_bot) = match config.node_mode {
-        NodeMode::ReadOnly => (None, None, None, None),
+        NodeMode::ReadOnly => (None, None, None, None, None),
         mode => {
             let block_producer_config = config
                 .block_producer
@@ -435,6 +435,8 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
                     None
                 };
 
+            let mem_pool_provider =
+                DefaultMemPoolProvider::new(rpc_client.clone(), Arc::clone(&poa));
                 let test_bot = TestBot::create(
                     store.clone(),
                     mem_pool.clone(),
@@ -447,12 +449,6 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
                         .ok_or_else(|| anyhow!("not set block producer"))?,
                     ckb_genesis_info.clone(),
                 )?;
-
-                let cleaner = Arc::new(Cleaner::new(
-                    rpc_client.clone(),
-                    ckb_genesis_info.clone(),
-                    wallet,
-                ));
 
             let wallet = Wallet::from_config(&block_producer_config.wallet_config)
                 .with_context(|| "init wallet")?;
