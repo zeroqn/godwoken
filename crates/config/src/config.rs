@@ -149,6 +149,7 @@ pub struct OffChainValidatorConfig {
     pub verify_withdrawal_signature: bool,
     pub verify_tx_signature: bool,
     pub verify_tx_execution: bool,
+    pub verify_max_cycles: u64,
     pub dump_tx_on_failure: bool,
 }
 
@@ -159,6 +160,7 @@ impl Default for OffChainValidatorConfig {
             verify_withdrawal_signature: true,
             verify_tx_signature: true,
             verify_tx_execution: true,
+            verify_max_cycles: 65_000_000,
             dump_tx_on_failure: false,
         }
     }
