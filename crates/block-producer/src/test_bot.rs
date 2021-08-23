@@ -19,6 +19,7 @@ use gw_types::packed::{
 };
 use gw_types::prelude::{Pack, Unpack};
 use sha3::{Digest, Keccak256};
+use smol::lock::Mutex;
 
 use crate::transaction_skeleton::TransactionSkeleton;
 use crate::types::ChainEvent;
@@ -31,7 +32,7 @@ use std::time::Duration;
 
 pub struct TestBot {
     store: Store,
-    mem_pool: Arc<parking_lot::Mutex<MemPool>>,
+    mem_pool: Arc<Mutex<MemPool>>,
     mem_provider: Box<dyn MemPoolProvider + Send>,
     rollup_context: RollupContext,
     rpc_client: RPCClient,
@@ -46,7 +47,7 @@ pub struct TestBot {
 impl TestBot {
     pub fn create(
         store: Store,
-        mem_pool: Arc<parking_lot::Mutex<MemPool>>,
+        mem_pool: Arc<Mutex<MemPool>>,
         mem_provider: Box<dyn MemPoolProvider + Send>,
         rollup_context: RollupContext,
         rpc_client: RPCClient,
@@ -118,7 +119,7 @@ impl TestBot {
             && self.last_block_number % 2 != 0
             && !self.duplicate_withdrawal
         {
-            match self.withdrawal_sudt(100, 346) {
+            match self.withdrawal_sudt(100, 346).await {
                 Err(err) if err.to_string().contains("duplicate") => {
                     self.duplicate_withdrawal = true
                 }
@@ -132,7 +133,7 @@ impl TestBot {
             let to = self.l2_account_script(to_eth_address);
             let to_hex = hex::encode(&to_eth_address);
 
-            match self.l2_sudt_transfer_to(to_eth_address, 1) {
+            match self.l2_sudt_transfer_to(to_eth_address, 1).await {
                 Err(err) if err.to_string().contains("duplicate") => self.duplicate_tx = true,
                 Ok(()) => self.duplicate_tx = false,
                 Err(err) => return Err(err),
@@ -336,10 +337,10 @@ impl TestBot {
         Ok(())
     }
 
-    fn withdrawal_ckb(&self, capacity: u64) -> Result<()> {
+    async fn withdrawal_ckb(&self, capacity: u64) -> Result<()> {
         let db = self.store.begin_transaction();
         let raw_withdrawal = {
-            let state_db = self.mem_pool.lock().fetch_state_db(&db)?;
+            let state_db = self.mem_pool.lock().await.fetch_state_db(&db)?;
             let state = state_db.state_tree()?;
 
             let l2_account_script = self.l2_account_script(self.wallet.eth_address());
@@ -400,16 +401,19 @@ impl TestBot {
             .signature(signature.pack())
             .build();
 
-        self.mem_pool.lock().push_withdrawal_request(withdrawal)?;
+        self.mem_pool
+            .lock()
+            .await
+            .push_withdrawal_request(withdrawal)?;
         log::info!("withdrawal ckb {}", capacity);
 
         Ok(())
     }
 
-    fn withdrawal_sudt(&self, amount: u128, capacity_ckb: u64) -> Result<()> {
+    async fn withdrawal_sudt(&self, amount: u128, capacity_ckb: u64) -> Result<()> {
         let db = self.store.begin_transaction();
         let raw_withdrawal = {
-            let state_db = self.mem_pool.lock().fetch_state_db(&db)?;
+            let state_db = self.mem_pool.lock().await.fetch_state_db(&db)?;
             let state = state_db.state_tree()?;
 
             let l2_account_script = self.l2_account_script(self.wallet.eth_address());
@@ -475,18 +479,21 @@ impl TestBot {
             .signature(signature.pack())
             .build();
 
-        self.mem_pool.lock().push_withdrawal_request(withdrawal)?;
+        self.mem_pool
+            .lock()
+            .await
+            .push_withdrawal_request(withdrawal)?;
         log::info!("withdrawal {}", amount);
 
         Ok(())
     }
 
-    fn l2_sudt_transfer_to(&self, to_eth_address: [u8; 20], amount: u128) -> Result<()> {
+    async fn l2_sudt_transfer_to(&self, to_eth_address: [u8; 20], amount: u128) -> Result<()> {
         let db = self.store.begin_transaction();
         let l2_account_script = self.l2_account_script(self.wallet.eth_address());
 
         let raw_l2tx = {
-            let state_db = self.mem_pool.lock().fetch_state_db(&db)?;
+            let state_db = self.mem_pool.lock().await.fetch_state_db(&db)?;
             let state = state_db.state_tree()?;
 
             let l2_account_id = get_account_id(&state, &l2_account_script)?;
@@ -547,7 +554,7 @@ impl TestBot {
             .signature(signature.pack())
             .build();
 
-        self.mem_pool.lock().push_transaction(tx)?;
+        self.mem_pool.lock().await.push_transaction(tx)?;
 
         let hex_eth_address = hex::encode(&to_eth_address);
         log::info!("transfer {} to {}", amount, hex_eth_address);
