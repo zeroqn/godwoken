@@ -258,7 +258,7 @@ impl Chain {
         let db = self.store().begin_transaction();
 
         let verify_context =
-            crate::challenge::build_verify_context(Arc::clone(&self.generator), &db, &target)
+            gw_challenge::context::build_verify_context(Arc::clone(&self.generator), &db, &target)
                 .with_context(|| "dump cancel challenge tx from chain")?;
 
         let global_state = {
@@ -347,7 +347,7 @@ impl Chain {
                         self.local_state.tip = l2block;
 
                         let context =
-                            crate::challenge::build_challenge_context(db, target.to_owned())?;
+                            gw_challenge::context::build_challenge_context(db, target.to_owned())?;
                         return Ok(SyncEvent::BadBlock { context });
                     }
 
@@ -378,7 +378,7 @@ impl Chain {
                         self.local_state.tip = l2block;
 
                         let context =
-                            crate::challenge::build_challenge_context(db, challenge_target)?;
+                            gw_challenge::context::build_challenge_context(db, challenge_target)?;
                         Ok(SyncEvent::BadBlock { context })
                     } else {
                         let block_number = l2block.raw().number().unpack();
@@ -422,7 +422,7 @@ impl Chain {
 
                         let generator = Arc::clone(&self.generator);
                         let context =
-                            crate::challenge::build_verify_context(generator, db, &target)?;
+                            gw_challenge::context::build_verify_context(generator, db, &target)?;
 
                         return Ok(SyncEvent::BadChallenge { cell, context });
                     }
@@ -438,7 +438,7 @@ impl Chain {
                     // If block is same, we don't care about target index and type, just want this
                     // bad block to be reverted anyway.
                     let revert_blocks = package_bad_blocks(db, &target.block_hash().unpack())?;
-                    let context = crate::challenge::build_revert_context(db, &revert_blocks)?;
+                    let context = gw_challenge::context::build_revert_context(db, &revert_blocks)?;
                     // NOTE: Ensure db is rollback. build_revert_context will modify reverted_block_smt
                     // to compute merkle proof and root, so must rollback changes.
                     db.rollback()?;
@@ -454,8 +454,10 @@ impl Chain {
                     match self.challenge_target {
                         // Previous challenge miss right target, we should challenge it
                         Some(ref target) => {
-                            let context =
-                                crate::challenge::build_challenge_context(db, target.to_owned())?;
+                            let context = gw_challenge::context::build_challenge_context(
+                                db,
+                                target.to_owned(),
+                            )?;
                             Ok(SyncEvent::BadBlock { context })
                         }
                         None => Ok(SyncEvent::Success),
@@ -553,8 +555,10 @@ impl Chain {
                     // If our bad block isn't reverted, just challenge it
                     match self.challenge_target {
                         Some(ref target) => {
-                            let context =
-                                crate::challenge::build_challenge_context(db, target.to_owned())?;
+                            let context = gw_challenge::context::build_challenge_context(
+                                db,
+                                target.to_owned(),
+                            )?;
                             Ok(SyncEvent::BadBlock { context })
                         }
                         None => Ok(SyncEvent::Success),
