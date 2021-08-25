@@ -18,6 +18,7 @@ mod withdraw;
 
 use clap::{value_t, App, Arg, SubCommand};
 use dump_tx::ChallengeBlock;
+use gw_jsonrpc_types::godwoken::ChallengeTargetType;
 use std::{path::Path, str::FromStr};
 
 fn main() {
@@ -1033,8 +1034,13 @@ fn main() {
         ("dump-tx", Some(m)) => {
             let godwoken_rpc_url = m.value_of("godwoken-rpc-url").unwrap();
             let block = ChallengeBlock::from_str(m.value_of("block").unwrap()).unwrap();
-            let index = serde_json::from_str(m.value_of("index").unwrap()).unwrap();
-            let type_ = serde_json::from_str(m.value_of("type").unwrap()).unwrap();
+            let index = u32::from_str(m.value_of("index").unwrap()).unwrap();
+            let type_ = match m.value_of("type").unwrap() {
+                "tx_execution" => ChallengeTargetType::TxExecution,
+                "tx_signature" => ChallengeTargetType::TxSignature,
+                "withdrawal" => ChallengeTargetType::Withdrawal,
+                _ => panic!("invalid challenge target type"),
+            };
             let output = Path::new(m.value_of("output").unwrap());
 
             if let Err(err) = dump_tx::dump_tx(godwoken_rpc_url, block, index, type_, output) {

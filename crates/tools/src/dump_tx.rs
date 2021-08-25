@@ -1,13 +1,12 @@
 use crate::godwoken_rpc::GodwokenRpcClient;
 
 use ckb_fixed_hash::H256;
-use ckb_jsonrpc_types::{Uint32, Uint64};
 use gw_jsonrpc_types::{debugger::DumpChallengeTarget, godwoken::ChallengeTargetType};
 
 use std::{fs::write, path::Path, str::FromStr};
 
 pub enum ChallengeBlock {
-    Number(Uint64),
+    Number(u64),
     Hash(H256),
 }
 
@@ -15,7 +14,7 @@ impl FromStr for ChallengeBlock {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Ok(n) = serde_json::from_str(s) {
+        if let Ok(n) = u64::from_str(s) {
             return Ok(ChallengeBlock::Number(n));
         }
 
@@ -29,19 +28,19 @@ impl FromStr for ChallengeBlock {
 pub fn dump_tx(
     godwoken_rpc_url: &str,
     block: ChallengeBlock,
-    target_index: Uint32,
+    target_index: u32,
     target_type: ChallengeTargetType,
     output: &Path,
 ) -> Result<(), String> {
     let challenge_target = match block {
         ChallengeBlock::Number(block_number) => DumpChallengeTarget::ByBlockNumber {
-            block_number,
-            target_index,
+            block_number: block_number.into(),
+            target_index: target_index.into(),
             target_type,
         },
         ChallengeBlock::Hash(block_hash) => DumpChallengeTarget::ByBlockHash {
             block_hash,
-            target_index,
+            target_index: target_index.into(),
             target_type,
         },
     };

@@ -114,7 +114,7 @@ impl GodwokenRpcClient {
         challenge_target: DumpChallengeTarget,
     ) -> Result<ReprMockTransaction, String> {
         let params = serde_json::to_value((challenge_target,)).map_err(|err| err.to_string())?;
-        self.rpc::<ReprMockTransaction>("debug_dump_cancel_challenge_tx", params)
+        self.raw_rpc::<ReprMockTransaction>("debug_dump_cancel_challenge_tx", params)
             .map(Into::into)
     }
 
@@ -124,15 +124,19 @@ impl GodwokenRpcClient {
         params: serde_json::Value,
     ) -> Result<SuccessResponse, String> {
         let method_name = format!("gw_{}", method);
+        self.raw_rpc(&method_name, params)
+    }
 
+    fn raw_rpc<SuccessResponse: serde::de::DeserializeOwned>(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<SuccessResponse, String> {
         self.id += 1;
         let mut req_json = serde_json::Map::new();
         req_json.insert("id".to_owned(), serde_json::to_value(&self.id).unwrap());
         req_json.insert("jsonrpc".to_owned(), serde_json::to_value(&"2.0").unwrap());
-        req_json.insert(
-            "method".to_owned(),
-            serde_json::to_value(method_name).unwrap(),
-        );
+        req_json.insert("method".to_owned(), serde_json::to_value(method).unwrap());
         req_json.insert("params".to_owned(), params);
 
         let resp = self
