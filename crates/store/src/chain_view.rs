@@ -3,6 +3,7 @@
 use gw_common::H256;
 use gw_db::error::Error;
 use gw_traits::ChainStore;
+use gw_types::packed::Script;
 
 use crate::transaction::StoreTransaction;
 
@@ -37,6 +38,10 @@ impl<'db> ChainStore for ChainView<'db> {
         Err("shouldn't execute transaction on forked chain"
             .to_string()
             .into())
+    }
+
+    fn get_asset_script(&self, script_hash: H256) -> Result<Option<Script>, Error> {
+        self.db.get_asset_script(&script_hash)
     }
 }
 
