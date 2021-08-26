@@ -297,9 +297,28 @@ impl Generator {
         let block_hash = raw_block.hash();
         let block_producer_id: u32 = block_info.block_producer_id().unpack();
 
+        let verify_withdrawal =
+            |chain: &C, state: &mut S, request: &WithdrawalRequest| -> Result<(), Error> {
+                let asset_script = {
+                    let script_hash: H256 = request.raw().sudt_script_hash().unpack();
+                    match chain.get_asset_script(script_hash) {
+                        Ok(script) => script,
+                        Err(err) => {
+                            log::error!("get withdrawal asset script {}", err);
+                            return Err(Error::State(gw_common::error::Error::Store));
+                        }
+                    }
+                };
+
+                self.verify_withdrawal_request(state, request, asset_script)?;
+                self.check_withdrawal_request_signature(state, &request)?;
+
+                Ok(())
+            };
+
         let mut withdrawal_receipts = Vec::with_capacity(withdrawal_requests.len());
         for (wth_idx, request) in withdrawal_requests.into_iter().enumerate() {
-            if let Err(error) = self.check_withdrawal_request_signature(state, &request) {
+            if let Err(error) = verify_withdrawal(chain, state, &request) {
                 let target = build_challenge_target(
                     block_hash.into(),
                     ChallengeTargetType::Withdrawal,

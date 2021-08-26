@@ -12,4 +12,5 @@ pub trait CodeStore {
 
 pub trait ChainStore {
     fn get_block_hash_by_number(&self, number: u64) -> Result<Option<H256>, DBError>;
+    fn get_asset_script(&self, script_hash: H256) -> Result<Option<Script>, DBError>;
 }

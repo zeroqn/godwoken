@@ -55,6 +55,10 @@ impl ChainStore for DummyChainStore {
     fn get_block_hash_by_number(&self, _number: u64) -> Result<Option<H256>, gw_db::error::Error> {
         Err("dummy chain store".to_string().into())
     }
+
+    fn get_asset_script(&self, _script_hash: H256) -> Result<Option<Script>, gw_db::error::Error> {
+        Err("dummy chain store".to_string().into())
+    }
 }
 
 fn new_block_info(block_producer_id: u32, number: u64, timestamp: u64) -> BlockInfo {
