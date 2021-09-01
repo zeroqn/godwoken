@@ -269,6 +269,7 @@ impl MockBlockParam {
         db: &StoreTransaction,
         state_db: &StateDBTransaction<'_>,
         run_result: &RunResult,
+        touched_keys: Vec<H256>,
     ) -> Result<MockChallengeOutput> {
         let target_index = self.transactions.inner.len().saturating_sub(1);
         let target_type = ChallengeTargetType::TxExecution as u8;
@@ -288,8 +289,14 @@ impl MockBlockParam {
             .target_type(target_type.into())
             .build();
 
-        let verify_context = self
-            .build_transaction_execution_verify_context(db, state_db, tx, raw_block, run_result)?;
+        let verify_context = self.build_transaction_execution_verify_context(
+            db,
+            state_db,
+            tx,
+            raw_block,
+            run_result,
+            touched_keys,
+        )?;
 
         Ok(MockChallengeOutput {
             raw_block_size,
@@ -469,6 +476,7 @@ impl MockBlockParam {
         tx: L2Transaction,
         raw_block: RawL2Block,
         run_result: &RunResult,
+        touched_keys: Vec<H256>,
     ) -> Result<VerifyContext> {
         let sender_id = tx.raw().from_id().unpack();
         let receiver_id = tx.raw().to_id().unpack();
@@ -488,7 +496,7 @@ impl MockBlockParam {
 
             state.apply_run_result(&run_result)?;
 
-            let mut read_keys: HashSet<H256> = run_result.read_values.keys().cloned().collect();
+            let mut read_keys: HashSet<H256> = touched_keys.into_iter().collect();
             let opt_keys = state.tracker_mut().touched_keys();
             let keys = opt_keys.ok_or_else(|| anyhow!("no key touched"))?;
             read_keys.extend(keys.borrow().clone());
@@ -697,7 +705,7 @@ fn get_script(state: &StateTree<'_, '_>, account_id: u32) -> Result<Script> {
 fn modify_state_and_rollback<T>(
     db: &StoreTransaction,
     state_db: &StateDBTransaction<'_>,
-    mut apply_fn: impl FnMut(&mut StateTree<'_, '_>) -> Result<T>,
+    mut apply_fn: impl FnOnce(&mut StateTree<'_, '_>) -> Result<T>,
 ) -> Result<T> {
     let mut state = state_db.state_tree()?;
 

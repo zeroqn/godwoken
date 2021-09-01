@@ -840,6 +840,7 @@ impl MemPool {
 
         let block_info = self.mem_block.block_info();
 
+        state.tracker_mut().enable();
         // execute tx
         let raw_tx = tx.raw();
         let run_result = self.generator.execute_transaction(
@@ -850,9 +851,21 @@ impl MemPool {
             L2TX_MAX_CYCLES,
         )?;
 
+        let touched_keys: Vec<H256> = {
+            let opt_keys = state.tracker_mut().touched_keys();
+            let keys = opt_keys.ok_or_else(|| anyhow!("no key touched"))?;
+            let clone_keys = keys.borrow().clone().into_iter();
+            clone_keys.collect()
+        };
+
         if let Some(ref mut offchain_validator) = self.offchain_validator {
-            let cycles =
-                offchain_validator.verify_transaction(db, &state_db, tx.clone(), &run_result)?;
+            let cycles = offchain_validator.verify_transaction(
+                db,
+                &state_db,
+                tx.clone(),
+                &run_result,
+                touched_keys,
+            )?;
             log::debug!("[mem-pool] offchain verify tx cycles {:?}", cycles);
         }
 

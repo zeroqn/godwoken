@@ -261,6 +261,7 @@ impl OffChainCancelChallengeValidator {
         state_db: &StateDBTransaction<'_>,
         tx: L2Transaction,
         run_result: &RunResult,
+        touched_keys: Vec<H256>,
     ) -> Result<Option<VerifyTxCycles>> {
         let block_param = &mut self.block_param;
         let safe_margin = &mut self.safe_margin;
@@ -309,7 +310,8 @@ impl OffChainCancelChallengeValidator {
                                 safe_margin: &mut MarginOfMockBlockSafity,
                                 raw_block_flag: &mut RawBlockFlag|
          -> Result<_> {
-            let challenge = block_param.challenge_last_tx_execution(db, state_db, run_result)?;
+            let challenge =
+                block_param.challenge_last_tx_execution(db, state_db, run_result, touched_keys)?;
             let mock_output = mock_tx::mock_cancel_challenge_tx(
                 &validator_ctx.mock_rollup,
                 &validator_ctx.mock_poa,
