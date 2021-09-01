@@ -519,10 +519,14 @@ impl MockBlockParam {
 
         let touched_keys = kv_state.iter().map(|(key, _)| key.to_owned()).collect();
         let kv_state: Vec<(H256, H256)> = kv_state.into_iter().collect();
+        let mut kv_state_hash = [0u8; 32];
+        let mut blake2b = new_blake2b();
         for (key, value) in kv_state.iter() {
-            println!("kv key {:?}", key);
-            println!("kv value {:?}", value);
+            blake2b.update(key.as_slice());
+            blake2b.update(value.as_slice());
         }
+        blake2b.finalize(&mut kv_state_hash);
+        println!("kv state hash {:?}", kv_state_hash);
         let kv_state_proof = {
             let smt = state_db.account_smt()?;
             smt.merkle_proof(touched_keys)?.compile(kv_state.clone())?
