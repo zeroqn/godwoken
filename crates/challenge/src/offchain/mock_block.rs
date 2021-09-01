@@ -504,6 +504,11 @@ impl MockBlockParam {
         }
 
         for key in run_result.write_values.keys() {
+            println!("write value begin");
+            println!("write key {:?}", key);
+            println!("write value {:?}", run_result.write_values.get(key));
+            println!("write value end");
+
             if kv_state.contains_key(key) {
                 continue;
             }
