@@ -26,7 +26,7 @@ use gw_types::packed::{
 };
 use gw_types::prelude::*;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(thiserror::Error, Debug)]
@@ -488,14 +488,15 @@ impl MockBlockParam {
 
             state.apply_run_result(&run_result)?;
 
+            let mut read_keys: HashSet<H256> = run_result.read_values.keys().cloned().collect();
             let opt_keys = state.tracker_mut().touched_keys();
             let keys = opt_keys.ok_or_else(|| anyhow!("no key touched"))?;
-            let clone_keys = keys.borrow().clone().into_iter();
-            Ok(clone_keys.collect())
+            read_keys.extend(keys.borrow().clone());
+
+            Ok(read_keys.into_iter().collect())
         };
 
         let touched_keys = modify_state_and_rollback(db, state_db, build_touched_keys)?;
-        println!("touched keys {}", touched_keys.len());
         let kv_state: Vec<(H256, H256)> = {
             let keys = touched_keys.iter();
             let to_kv = keys.map(|k| {
