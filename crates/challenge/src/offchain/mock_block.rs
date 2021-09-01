@@ -519,6 +519,10 @@ impl MockBlockParam {
 
         let touched_keys = kv_state.iter().map(|(key, _)| key.to_owned()).collect();
         let kv_state: Vec<(H256, H256)> = kv_state.into_iter().collect();
+        for (key, value) in kv_state.iter() {
+            println!("kv key {:?}", key);
+            println!("kv value {:?}", value);
+        }
         let kv_state_proof = {
             let smt = state_db.account_smt()?;
             smt.merkle_proof(touched_keys)?.compile(kv_state.clone())?
