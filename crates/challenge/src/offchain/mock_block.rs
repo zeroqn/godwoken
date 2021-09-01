@@ -124,7 +124,7 @@ impl MockBlockParam {
             Ok(post_account)
         };
 
-        let post_account = build_post_account_and_rollback(db, state_db, apply)?;
+        let post_account = modify_state_and_rollback(db, state_db, apply)?;
         let checkpoint = calculate_state_checkpoint(
             &post_account.merkle_root().unpack(),
             post_account.count().unpack(),
@@ -172,7 +172,7 @@ impl MockBlockParam {
             Ok(post_account)
         };
 
-        let post_account = build_post_account_and_rollback(db, state_db, apply)?;
+        let post_account = modify_state_and_rollback(db, state_db, apply)?;
         let checkpoint = calculate_state_checkpoint(
             &post_account.merkle_root().unpack(),
             post_account.count().unpack(),
@@ -288,8 +288,8 @@ impl MockBlockParam {
             .target_type(target_type.into())
             .build();
 
-        let verify_context =
-            self.build_transaction_execution_verify_context(state_db, tx, raw_block, run_result)?;
+        let verify_context = self
+            .build_transaction_execution_verify_context(db, state_db, tx, raw_block, run_result)?;
 
         Ok(MockChallengeOutput {
             raw_block_size,
@@ -464,6 +464,7 @@ impl MockBlockParam {
 
     fn build_transaction_execution_verify_context(
         &self,
+        db: &StoreTransaction,
         state_db: &StateDBTransaction<'_>,
         tx: L2Transaction,
         raw_block: RawL2Block,
@@ -476,44 +477,32 @@ impl MockBlockParam {
         let sender_script = get_script(&tree, sender_id)?;
         let receiver_script = get_script(&tree, receiver_id)?;
 
-        let mut kv_state: HashMap<H256, H256> = HashMap::new();
-        kv_state.insert(
-            build_account_field_key(sender_id, GW_ACCOUNT_SCRIPT_HASH_TYPE),
-            sender_script.hash().into(),
-        );
-        kv_state.insert(
-            build_account_field_key(receiver_id, GW_ACCOUNT_SCRIPT_HASH_TYPE),
-            receiver_script.hash().into(),
-        );
-        kv_state.insert(
-            build_account_field_key(sender_id, GW_ACCOUNT_NONCE_TYPE),
-            H256::from_u32(tx.raw().nonce().unpack()),
-        );
-        assert_eq!(
-            tree.get_nonce(sender_id)?,
-            Unpack::<u32>::unpack(&tx.raw().nonce())
-        );
+        let build_touched_keys = |state: &mut StateTree<'_, '_>| -> Result<Vec<H256>> {
+            state.tracker_mut().enable();
 
-        for key in run_result.read_values.keys() {
-            if kv_state.contains_key(key) {
-                continue;
-            }
+            get_script(&state, sender_id)?;
+            get_script(&state, receiver_id)?;
 
-            let value = tree.get_raw(key)?;
-            kv_state.insert(key.to_owned(), value);
-        }
+            // To verify transaction signature
+            state.get_nonce(sender_id)?;
 
-        for key in run_result.write_values.keys() {
-            if kv_state.contains_key(key) {
-                continue;
-            }
+            state.apply_run_result(&run_result)?;
 
-            let value = tree.get_raw(key)?;
-            kv_state.insert(key.to_owned(), value);
-        }
+            let opt_keys = state.tracker_mut().touched_keys();
+            let keys = opt_keys.ok_or_else(|| anyhow!("no key touched"))?;
+            let clone_keys = keys.borrow().clone().into_iter();
+            Ok(clone_keys.collect())
+        };
 
-        let touched_keys = kv_state.iter().map(|(key, _)| key.to_owned()).collect();
-        let kv_state: Vec<(H256, H256)> = kv_state.into_iter().collect();
+        let touched_keys = modify_state_and_rollback(db, state_db, build_touched_keys)?;
+        let kv_state: Vec<(H256, H256)> = {
+            let keys = touched_keys.iter();
+            let to_kv = keys.map(|k| {
+                let v = tree.get_raw(k)?;
+                Ok((*k, v))
+            });
+            to_kv.collect::<Result<Vec<(H256, H256)>>>()
+        }?;
         let kv_state_proof = {
             let smt = state_db.account_smt()?;
             smt.merkle_proof(touched_keys)?.compile(kv_state.clone())?
@@ -703,11 +692,11 @@ fn get_script(state: &StateTree<'_, '_>, account_id: u32) -> Result<Script> {
         .ok_or_else(|| anyhow!("tx script not found"))
 }
 
-fn build_post_account_and_rollback(
+fn modify_state_and_rollback<T>(
     db: &StoreTransaction,
     state_db: &StateDBTransaction<'_>,
-    mut apply_fn: impl FnMut(&mut StateTree<'_, '_>) -> Result<AccountMerkleState>,
-) -> Result<AccountMerkleState> {
+    mut apply_fn: impl FnMut(&mut StateTree<'_, '_>) -> Result<T>,
+) -> Result<T> {
     let mut state = state_db.state_tree()?;
 
     db.set_save_point();
