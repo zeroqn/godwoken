@@ -495,6 +495,7 @@ impl MockBlockParam {
         };
 
         let touched_keys = modify_state_and_rollback(db, state_db, build_touched_keys)?;
+        println!("touched keys {}", touched_keys.len());
         let kv_state: Vec<(H256, H256)> = {
             let keys = touched_keys.iter();
             let to_kv = keys.map(|k| {
