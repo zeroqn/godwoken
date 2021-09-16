@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    sync::RwLock,
     time::Duration,
 };
 
@@ -36,6 +37,8 @@ pub struct MemBlock {
     prev_merkle_state: AccountMerkleState,
     /// touched keys
     touched_keys: HashSet<H256>,
+    /// Access lock
+    lock: RwLock<()>,
 }
 
 impl MemBlock {
@@ -65,6 +68,8 @@ impl MemBlock {
     }
 
     pub fn clear(&mut self) {
+        let _ = self.lock.write().unwrap();
+
         self.tx_receipts.clear();
         self.txs.clear();
         self.withdrawals.clear();
@@ -75,6 +80,8 @@ impl MemBlock {
     }
 
     pub fn push_withdrawal(&mut self, withdrawal_hash: H256, state_checkpoint: H256) {
+        let _ = self.lock.write().unwrap();
+
         assert!(self.txs.is_empty());
         assert!(self.deposits.is_empty());
         self.withdrawals.push(withdrawal_hash);
@@ -82,12 +89,16 @@ impl MemBlock {
     }
 
     pub fn push_deposits(&mut self, deposit_cells: Vec<DepositInfo>, prev_state_checkpoint: H256) {
+        let _ = self.lock.write().unwrap();
+
         assert!(self.txs_prev_state_checkpoint.is_none());
         self.deposits = deposit_cells;
         self.txs_prev_state_checkpoint = Some(prev_state_checkpoint);
     }
 
     pub fn push_tx(&mut self, tx_hash: H256, receipt: TxReceipt) {
+        let _ = self.lock.write().unwrap();
+
         let post_state = receipt.post_state();
         let state_checkpoint = calculate_state_checkpoint(
             &post_state.merkle_root().unpack(),
@@ -104,26 +115,38 @@ impl MemBlock {
     }
 
     pub fn append_touched_keys<I: Iterator<Item = H256>>(&mut self, keys: I) {
+        let _ = self.lock.write().unwrap();
+
         self.touched_keys.extend(keys)
     }
 
     pub fn withdrawals(&self) -> &[H256] {
+        let _ = self.lock.read().unwrap();
+
         &self.withdrawals
     }
 
     pub fn deposits(&self) -> &[DepositInfo] {
+        let _ = self.lock.read().unwrap();
+
         &self.deposits
     }
 
     pub fn txs(&self) -> &[H256] {
+        let _ = self.lock.read().unwrap();
+
         &self.txs
     }
 
     pub fn tx_receipts(&self) -> &HashMap<H256, TxReceipt> {
+        let _ = self.lock.read().unwrap();
+
         &self.tx_receipts
     }
 
     pub fn state_checkpoints(&self) -> &[H256] {
+        let _ = self.lock.read().unwrap();
+
         &self.state_checkpoints
     }
 
@@ -132,14 +155,20 @@ impl MemBlock {
     }
 
     pub fn touched_keys(&self) -> &HashSet<H256> {
+        let _ = self.lock.read().unwrap();
+
         &self.touched_keys
     }
 
     pub fn txs_prev_state_checkpoint(&self) -> Option<H256> {
+        let _ = self.lock.read().unwrap();
+
         self.txs_prev_state_checkpoint
     }
 
     pub fn prev_merkle_state(&self) -> &AccountMerkleState {
+        let _ = self.lock.read().unwrap();
+
         &self.prev_merkle_state
     }
 }
