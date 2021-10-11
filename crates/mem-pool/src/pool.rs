@@ -19,7 +19,10 @@ use gw_common::{
 };
 use gw_config::MemPoolConfig;
 use gw_generator::{
-    constants::L2TX_MAX_CYCLES, error::TransactionError, traits::StateExt, Generator,
+    constants::L2TX_MAX_CYCLES,
+    error::{LockAlgorithmError, TransactionError},
+    traits::StateExt,
+    Generator,
 };
 use gw_store::{
     chain_view::ChainView,
@@ -169,7 +172,25 @@ impl MemPool {
     /// Push a layer2 tx into pool
     pub fn push_transaction(&mut self, tx: L2Transaction) -> Result<()> {
         let db = self.store.begin_transaction();
-        self.push_transaction_with_db(&db, tx)?;
+        let tx_hash = tx.hash();
+        let sender_id: u32 = tx.raw().from_id().unpack();
+        let to_id: u32 = tx.raw().to_id().unpack();
+        if let Err(err) = self.push_transaction_with_db(&db, tx) {
+            if let Some(LockAlgorithmError::InvalidSignature) =
+                err.downcast_ref::<LockAlgorithmError>()
+            {
+                let tx_hash = hex::encode(tx_hash);
+                let index = self.mem_block.txs().len();
+                log::warn!(
+                    "fail to push tx {} from {} to {} at index {}",
+                    tx_hash,
+                    sender_id,
+                    to_id,
+                    index
+                );
+            }
+            return Err(err);
+        }
         db.commit()?;
         Ok(())
     }
@@ -1073,6 +1094,22 @@ impl MemPool {
 
         // generate tx receipt
         let merkle_state = state.merkle_state()?;
+
+        if let Some(account_count) = run_result.account_count {
+            let block_number = block_info.number().unpack();
+            let tx_index = self.mem_block.txs().len();
+            let account_id = account_count.saturating_sub(1);
+            let account_script_hash = state.get_script_hash(account_id)?;
+            log::info!(
+                "tx {} create account id {} at mem block {} index {}, script hash {}",
+                hex::encode(tx.hash()),
+                account_id,
+                block_number + 1,
+                tx_index,
+                hex::encode(account_script_hash.as_slice())
+            );
+        }
+
         let tx_receipt =
             TxReceipt::build_receipt(tx.witness_hash().into(), run_result, merkle_state);
 

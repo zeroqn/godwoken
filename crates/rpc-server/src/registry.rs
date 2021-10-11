@@ -685,6 +685,9 @@ async fn get_nonce(
     let tree = state_db.state_tree()?;
 
     let nonce = tree.get_nonce(account_id.into())?;
+    if nonce == 0 {
+        log::warn!("id {} nonce is zero", account_id);
+    }
 
     Ok(nonce.into())
 }
@@ -714,6 +717,11 @@ async fn get_script_hash(
     let tree = state_db.state_tree()?;
 
     let script_hash = tree.get_script_hash(account_id.into())?;
+    if script_hash.is_zero() {
+        let nonce = tree.get_nonce(account_id.into())?;
+        log::warn!("id {} script hash is zero, nonce {}", account_id, nonce);
+    }
+
     Ok(to_jsonh256(script_hash))
 }
 
@@ -725,7 +733,14 @@ async fn get_script_hash_by_short_address(
     let db = store.begin_transaction();
     let state_db = get_state_db_at_block(&db, None, mem_pool.is_some())?;
     let tree = state_db.state_tree()?;
-    let script_hash_opt = tree.get_script_hash_by_short_address(&short_address.into_bytes());
+    let short_address = short_address.into_bytes();
+    let script_hash_opt = tree.get_script_hash_by_short_address(&short_address);
+    if matches!(script_hash_opt.as_ref().map(|h| h.is_zero()), Some(true)) {
+        log::warn!(
+            "short address {} script hash is zero",
+            faster_hex::hex_string(&short_address)?
+        );
+    }
     Ok(script_hash_opt.map(to_jsonh256))
 }
 
