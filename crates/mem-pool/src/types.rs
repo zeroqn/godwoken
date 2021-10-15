@@ -1,7 +1,16 @@
+use gw_common::H256;
 use gw_types::{
-    packed::{L2Transaction, WithdrawalRequest},
+    packed::{L2Transaction, LogItem, WithdrawalRequest},
     prelude::*,
 };
+
+pub struct ErrorReceiptWithLog {
+    pub tx_hash: H256,
+    pub block_number: u64,
+    pub transaction_index: u32,
+    pub return_data: Vec<u8>,
+    pub last_log: Option<LogItem>,
+}
 
 #[derive(Default)]
 pub struct EntryList {

@@ -2255,6 +2255,7 @@ dependencies = [
  "gw-config",
  "gw-db",
  "gw-generator",
+ "gw-mem-pool",
  "gw-store",
  "gw-traits",
  "gw-types",
@@ -2263,6 +2264,7 @@ dependencies = [
  "rlp",
  "rust_decimal",
  "sha3",
+ "smol",
  "sqlx",
  "thiserror",
 ]
