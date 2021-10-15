@@ -12,3 +12,5 @@ pub mod pool;
 pub mod traits;
 mod types;
 pub mod withdrawal;
+
+pub use types::ErrorReceiptWithLog;

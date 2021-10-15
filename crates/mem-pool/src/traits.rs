@@ -7,6 +7,8 @@ use gw_types::{
 };
 use smol::Task;
 
+use crate::ErrorReceiptWithLog;
+
 pub trait MemPoolProvider {
     fn estimate_next_blocktime(&self) -> Task<Result<Duration>>;
     fn collect_deposit_cells(&self) -> Task<Result<Vec<DepositInfo>>>;
@@ -16,4 +18,8 @@ pub trait MemPoolProvider {
         last_finalized_block_number: u64,
         rollup_context: RollupContext,
     ) -> Task<Result<CollectedCustodianCells>>;
+}
+
+pub trait MemPoolErrorTxHandler {
+    fn handle_receipt_with_log(&self, receipt_with_log: ErrorReceiptWithLog) -> Task<Result<()>>;
 }
