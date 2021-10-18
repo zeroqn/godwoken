@@ -244,7 +244,7 @@ impl MemPool {
         self.generator.verify_transaction(&state, &tx)?;
         // execute tx
         let raw_tx = tx.raw();
-        let run_result = self.generator.execute_transaction(
+        let run_result = self.generator.unchecked_execute_transaction(
             &chain_view,
             &state,
             block_info,

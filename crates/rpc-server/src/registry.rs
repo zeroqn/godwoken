@@ -504,7 +504,7 @@ async fn execute_raw_l2transaction(
             ChainView::new(&db, tip_block_hash)
         };
         // execute tx
-        let run_result = generator.execute_transaction(
+        let run_result = generator.unchecked_execute_transaction(
             &chain_view,
             &state,
             &block_info,
