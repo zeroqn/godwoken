@@ -631,6 +631,7 @@ async fn submit_l2transaction(
             code: MEMPOOL_IS_FULL_ERR_CODE,
             message: "mem pool is full",
         }),
+        Err(BatchError::Push(err)) => Err(err.into()),
     }
 }
 
@@ -647,7 +648,6 @@ async fn submit_withdrawal_request(
     let withdrawal_bytes = withdrawal_request.into_bytes();
     let withdrawal = packed::WithdrawalRequest::from_slice(&withdrawal_bytes)?;
 
-    // TODO: Withdrwal request validation
     match mem_pool_batch.try_push_withdrawal_request(withdrawal) {
         Ok(_) => Ok(()),
         Err(BatchError::Shutdown) => Err(RpcError::Provided {
@@ -658,6 +658,7 @@ async fn submit_withdrawal_request(
             code: MEMPOOL_IS_FULL_ERR_CODE,
             message: "mem pool is full",
         }),
+        Err(BatchError::Push(err)) => Err(err.into()),
     }
 }
 
