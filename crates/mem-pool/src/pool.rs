@@ -821,7 +821,7 @@ impl MemPool {
         }
 
         let new_tip_txs = new_tip_block.transactions().len();
-        let reinject_txs = self.mem_block.txs().len() - new_tip_txs;
+        let reinject_txs = self.mem_block.txs().len().saturating_mul(new_tip_txs);
         if reinject_txs <= 50 {
             return self.reset(Some(self.current_tip().0), Some(new_tip));
         }
