@@ -10,9 +10,26 @@ use rocksdb::ops::{
 };
 use rocksdb::{
     ffi, ColumnFamily, ColumnFamilyDescriptor, DBPinnableSlice, FullOptions, IteratorMode,
-    OptimisticTransactionDB, OptimisticTransactionOptions, Options, WriteBatch, WriteOptions,
+    OptimisticTransactionDB, OptimisticTransactionOptions, Options, SliceTransform, WriteBatch,
+    WriteOptions,
 };
 use std::sync::Arc;
+
+macro_rules! fixed_suffix_slice_transform {
+    ($suffix_len:expr) => {{
+        fn transform(key: &[u8]) -> &[u8] {
+            let mid = key.len() - $suffix_len;
+            let (left, _) = key.split_at(mid);
+            left
+        }
+
+        fn in_domain(key: &[u8]) -> bool {
+            key.len() >= $suffix_len
+        }
+
+        SliceTransform::create("FixedSuffixSliceTransform", transform, Some(in_domain))
+    }};
+}
 
 /// RocksDB wrapper base on OptimisticTransactionDB
 ///
@@ -50,6 +67,7 @@ impl RocksDB {
             (opts, cf_descriptors)
         };
 
+        opts.set_prefix_extractor(fixed_suffix_slice_transform!(12));
         opts.create_if_missing(false);
         opts.create_missing_column_families(true);
 
