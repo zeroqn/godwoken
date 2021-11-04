@@ -732,6 +732,8 @@ impl MemPool {
     }
 
     fn update_state(&mut self, new_tip: H256) -> Result<()> {
+        let now = std::time::Instant::now();
+
         if self.mem_block.txs_prev_state_checkpoint().is_none() {
             return self.reset(Some(self.current_tip().0), Some(new_tip));
         }
@@ -812,6 +814,8 @@ impl MemPool {
         }
 
         db.commit()?;
+
+        log::info!("reset time {}", now.elapsed().as_millis());
 
         Ok(())
     }
