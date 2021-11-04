@@ -458,8 +458,10 @@ impl MemPool {
     /// Notify new tip
     /// this method update current state of mem pool
     pub fn notify_new_tip(&mut self, new_tip: H256) -> Result<()> {
+        self.update_state(new_tip)?;
+
         // reset pool state
-        self.reset(Some(self.current_tip().0), Some(new_tip))?;
+        // self.reset(Some(self.current_tip().0), Some(new_tip))?;
         Ok(())
     }
 
@@ -727,6 +729,91 @@ impl MemPool {
         };
 
         Ok((repackage_block, post_merkle_state))
+    }
+
+    fn update_state(&mut self, new_tip: H256) -> Result<()> {
+        if self.mem_block.txs_prev_state_checkpoint().is_none() {
+            return self.reset(Some(self.current_tip().0), Some(new_tip));
+        }
+
+        let new_tip_block = self.store.get_block(&new_tip)?.expect("new tip block");
+        if self.current_tip().0 != new_tip_block.raw().parent_block_hash().unpack() {
+            return self.reset(Some(self.current_tip().0), Some(new_tip));
+        }
+
+        let new_tip_prev_txs_checkpoint: H256 = new_tip_block
+            .raw()
+            .submit_transactions()
+            .prev_state_checkpoint()
+            .unpack();
+
+        let mem_block_prev_txs_checkpoint: H256 = self
+            .mem_block
+            .txs_prev_state_checkpoint()
+            .expect("mem block prev txs checkpoint");
+
+        // Check whether we can safely resume next mem block state from
+        // new tip block post state.
+        if mem_block_prev_txs_checkpoint != new_tip_prev_txs_checkpoint {
+            return self.reset(Some(self.current_tip().0), Some(new_tip));
+        }
+
+        let new_tip_txs = new_tip_block.transactions().len();
+        let reinject_txs = self.mem_block.txs().len() - new_tip_txs;
+        if reinject_txs <= 50 {
+            return self.reset(Some(self.current_tip().0), Some(new_tip));
+        }
+
+        // Try resume from new tip block post state without reinject and
+        // txs.
+        let estimated_timestamp = smol::block_on(self.inner.provider().estimate_next_blocktime())?;
+        // reset mem block state
+        let merkle_state = new_tip_block.raw().post_account();
+        let db = self.store.begin_transaction();
+        self.reset_mem_block_state_db(&db, merkle_state)?;
+        let mem_block_content = self.mem_block.reset(&new_tip_block, estimated_timestamp);
+        db.update_mem_pool_block_info(self.mem_block.block_info())?;
+        let reverted_block_root: H256 = {
+            let smt = db.reverted_block_smt()?;
+            smt.root().to_owned()
+        };
+        if let Some(ref mut offchain_validator) = self.offchain_validator {
+            let timestamp = self.mem_block.block_info().timestamp().unpack();
+            offchain_validator.reset(&new_tip_block, timestamp, reverted_block_root);
+        }
+
+        // set tip
+        self.inner
+            .set_current_tip((new_tip, new_tip_block.raw().number().unpack()));
+
+        //
+        self.finalize_deposits(&db, vec![])?;
+
+        // Process txs
+        let mut reinject_txs = Vec::with_capacity(reinject_txs);
+        for tx_hash in mem_block_content.txs.into_iter().skip(new_tip_txs) {
+            if let Some(tx) = db.get_mem_pool_transaction(&tx_hash)? {
+                reinject_txs.push(tx);
+            }
+        }
+
+        // remove from pending
+        self.remove_unexecutables(&db)?;
+
+        for tx in reinject_txs {
+            let tx_hash = tx.hash();
+            if let Err(err) = self.push_transaction_with_db(&db, tx) {
+                log::info!(
+                    "[mem pool] fail to re-inject tx {}, error: {}",
+                    hex::encode(&tx_hash),
+                    err
+                );
+            }
+        }
+
+        db.commit()?;
+
+        Ok(())
     }
 
     /// Reset
