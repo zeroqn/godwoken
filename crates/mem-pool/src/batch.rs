@@ -148,12 +148,16 @@ impl BatchTxWithdrawalInBackground {
 
             {
                 let mut mem_pool = self.mem_pool.lock().await;
+                let mut txs = Vec::with_capacity(batch.len());
                 for req in batch.drain(..) {
                     let req_hash = req.hash();
                     let req_kind = req.kind();
 
                     if let Err(err) = match req {
-                        BatchRequest::Transaction(tx) => mem_pool.push_transaction(tx),
+                        BatchRequest::Transaction(tx) => {
+                            txs.push(tx);
+                            Ok(())
+                        }
                         BatchRequest::Withdrawal(w) => mem_pool.push_withdrawal_request(w),
                     } {
                         log::info!(
@@ -163,6 +167,9 @@ impl BatchTxWithdrawalInBackground {
                             err
                         )
                     }
+                }
+                if let Err(err) = mem_pool.push_transactions(txs) {
+                    log::error!("[mem-pool packager] fail to push txs {}", err);
                 }
             }
         }

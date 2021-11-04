@@ -27,7 +27,7 @@ use gw_generator::{
 };
 use gw_store::{
     chain_view::ChainView,
-    state_db::{CheckPoint, StateDBMode, StateDBTransaction, SubState, WriteContext},
+    state_db::{CheckPoint, StateDBMode, StateDBTransaction, StateTree, SubState, WriteContext},
     transaction::{mem_pool_store::MemPoolStore, StoreTransaction},
     Store,
 };
@@ -366,6 +366,66 @@ impl MemPool {
         db.insert_mem_pool_transaction(&tx_hash, tx.clone())?;
         let entry_list = self.pending.entry(account_id).or_default();
         entry_list.txs.push(tx);
+
+        Ok(())
+    }
+
+    pub fn push_transactions(&mut self, txs: Vec<L2Transaction>) -> Result<()> {
+        let db = self.store.begin_transaction();
+        self.push_txs_with_db(&db, txs)?;
+        db.commit()?;
+        Ok(())
+    }
+
+    fn push_txs_with_db(&mut self, db: &StoreTransaction, txs: Vec<L2Transaction>) -> Result<()> {
+        let state_db = self.fetch_state_db(db)?;
+        let mut state = state_db.state_tree()?;
+        let tip_block_hash = db.get_tip_block_hash()?;
+        let chain_view = ChainView::new(db, tip_block_hash);
+        let block_info = self.mem_block.block_info().to_owned();
+
+        for tx in txs {
+            // check duplication
+            let tx_hash: H256 = tx.raw().hash().into();
+            if self.mem_block.txs_set().contains(&tx_hash) {
+                return Err(anyhow!("duplicated tx"));
+            }
+
+            // reject if mem block is full
+            // TODO: we can use the pool as a buffer
+            if self.mem_block.txs().len() >= MAX_MEM_BLOCK_TXS {
+                return Err(anyhow!(
+                    "Mem block is full, MAX_MEM_BLOCK_TXS: {}",
+                    MAX_MEM_BLOCK_TXS
+                ));
+            }
+
+            // verification
+            self.verify_tx(db, &tx)?;
+
+            db.set_save_point();
+            match self.inner_finalize_tx(db, &state_db, &mut state, &chain_view, &block_info, &tx) {
+                Ok(tx_receipt) => {
+                    self.mem_block.push_tx(tx_hash, &tx_receipt);
+                    db.insert_mem_pool_transaction_receipt(&tx_hash, tx_receipt)?;
+
+                    let account_id: u32 = tx.raw().from_id().unpack();
+                    db.insert_mem_pool_transaction(&tx_hash, tx.clone())?;
+                    let entry_list = self.pending.entry(account_id).or_default();
+                    entry_list.txs.push(tx);
+                }
+                Err(err) => {
+                    log::error!(
+                        "[mem-pool] failed to finalize tx {}: {}",
+                        hex::encode(tx.hash()),
+                        err
+                    );
+                    if let Err(err) = db.rollback_to_save_point() {
+                        log::error!("[mem-pool] failed to rollback to save point: {}", err);
+                    }
+                }
+            }
+        }
 
         Ok(())
     }
@@ -802,20 +862,12 @@ impl MemPool {
         // remove from pending
         self.remove_unexecutables(&db)?;
 
-        for tx in reinject_txs {
-            let tx_hash = tx.hash();
-            if let Err(err) = self.push_transaction_with_db(&db, tx) {
-                log::info!(
-                    "[mem pool] fail to re-inject tx {}, error: {}",
-                    hex::encode(&tx_hash),
-                    err
-                );
-            }
+        if let Err(err) = self.push_txs_with_db(&db, reinject_txs) {
+            log::info!("[mem pool] fail to re-inject txs error: {}", err);
         }
 
         db.commit()?;
-
-        log::info!("reset time {}", now.elapsed().as_millis());
+        log::info!("[mem-pool] reset {}", now.elapsed().as_millis());
 
         Ok(())
     }
@@ -1046,15 +1098,8 @@ impl MemPool {
         };
         self.finalize_deposits(db, deposit_cells)?;
         // re-inject txs
-        for tx in txs {
-            if let Err(err) = self.push_transaction_with_db(db, tx.clone()) {
-                let tx_hash = tx.hash();
-                log::info!(
-                    "[mem pool] fail to re-inject tx {}, error: {}",
-                    hex::encode(&tx_hash),
-                    err
-                );
-            }
+        if let Err(err) = self.push_txs_with_db(db, txs.collect()) {
+            log::info!("[mem pool] fail to re-inject txs error: {}", err);
         }
 
         Ok(())
@@ -1243,20 +1288,20 @@ impl MemPool {
         Ok(())
     }
 
-    /// Execute tx & update local state
-    fn finalize_tx(&mut self, db: &StoreTransaction, tx: L2Transaction) -> Result<TxReceipt> {
-        let state_db = self.fetch_state_db(db)?;
-        let mut state = state_db.state_tree()?;
-        let tip_block_hash = db.get_tip_block_hash()?;
-        let chain_view = ChainView::new(db, tip_block_hash);
-
-        let block_info = self.mem_block.block_info();
-
+    fn inner_finalize_tx(
+        &mut self,
+        db: &StoreTransaction,
+        state_db: &StateDBTransaction,
+        state: &mut StateTree,
+        chain_view: &ChainView,
+        block_info: &BlockInfo,
+        tx: &L2Transaction,
+    ) -> Result<TxReceipt> {
         // execute tx
         let raw_tx = tx.raw();
         let run_result = self.generator.unchecked_execute_transaction(
-            &chain_view,
-            &state,
+            chain_view,
+            state,
             block_info,
             &raw_tx,
             L2TX_MAX_CYCLES,
@@ -1264,7 +1309,7 @@ impl MemPool {
 
         if let Some(ref mut offchain_validator) = self.offchain_validator {
             let maybe_cycles =
-                offchain_validator.verify_transaction(db, &state_db, tx.clone(), &run_result);
+                offchain_validator.verify_transaction(db, state_db, tx.clone(), &run_result);
 
             if 0 == run_result.exit_code {
                 let cycles = maybe_cycles?;
@@ -1299,5 +1344,16 @@ impl MemPool {
             TxReceipt::build_receipt(tx.witness_hash().into(), run_result, merkle_state);
 
         Ok(tx_receipt)
+    }
+
+    /// Execute tx & update local state
+    fn finalize_tx(&mut self, db: &StoreTransaction, tx: L2Transaction) -> Result<TxReceipt> {
+        let state_db = self.fetch_state_db(db)?;
+        let mut state = state_db.state_tree()?;
+        let tip_block_hash = db.get_tip_block_hash()?;
+        let chain_view = ChainView::new(db, tip_block_hash);
+        let block_info = self.mem_block.block_info().to_owned();
+
+        self.inner_finalize_tx(db, &state_db, &mut state, &chain_view, &block_info, &tx)
     }
 }
