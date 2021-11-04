@@ -67,7 +67,7 @@ impl RocksDB {
             (opts, cf_descriptors)
         };
 
-        opts.set_prefix_extractor(fixed_suffix_slice_transform!(12));
+        // opts.set_prefix_extractor(fixed_suffix_slice_transform!(12));
         opts.create_if_missing(false);
         opts.create_missing_column_families(true);
 
