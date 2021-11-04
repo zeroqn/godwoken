@@ -372,8 +372,14 @@ impl MemPool {
 
     pub fn push_transactions(&mut self, txs: Vec<L2Transaction>) -> Result<()> {
         let db = self.store.begin_transaction();
+        let now = std::time::Instant::now();
         self.push_txs_with_db(&db, txs)?;
         db.commit()?;
+        println!(
+            "push transactions {} use {}",
+            txs.len(),
+            now.elapsed().as_millis()
+        );
         Ok(())
     }
 
