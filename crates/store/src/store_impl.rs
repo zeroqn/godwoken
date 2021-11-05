@@ -46,6 +46,7 @@ impl<'a> Store {
     pub fn begin_transaction(&self) -> StoreTransaction {
         StoreTransaction {
             inner: self.db.transaction(),
+            cache: Default::default(),
         }
     }
 

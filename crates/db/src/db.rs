@@ -10,8 +10,7 @@ use rocksdb::ops::{
 };
 use rocksdb::{
     ffi, ColumnFamily, ColumnFamilyDescriptor, DBPinnableSlice, FullOptions, IteratorMode,
-    OptimisticTransactionDB, OptimisticTransactionOptions, Options, SliceTransform, WriteBatch,
-    WriteOptions,
+    OptimisticTransactionDB, OptimisticTransactionOptions, Options, WriteBatch, WriteOptions,
 };
 use std::sync::Arc;
 

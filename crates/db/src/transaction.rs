@@ -1,10 +1,11 @@
 use crate::db::cf_handle;
 use crate::schema::Col;
-use crate::{internal_error, Result};
-use rocksdb::ops::{DeleteCF, GetCF, PutCF};
+use crate::{internal_error, Result, RocksDBWriteBatch};
+use rocksdb::ops::{DeleteCF, GetCF, PutCF, WriteOps};
 pub use rocksdb::{DBPinnableSlice, DBVector};
 use rocksdb::{
     OptimisticTransaction, OptimisticTransactionDB, OptimisticTransactionSnapshot, ReadOptions,
+    WriteBatch,
 };
 use std::sync::Arc;
 
@@ -27,6 +28,17 @@ impl RocksDBTransaction {
     pub fn delete(&self, col: Col, key: &[u8]) -> Result<()> {
         let cf = cf_handle(&self.db, col)?;
         self.inner.delete_cf(cf, key).map_err(internal_error)
+    }
+
+    pub fn new_write_batch(&self) -> RocksDBWriteBatch {
+        RocksDBWriteBatch {
+            db: Arc::clone(&self.db),
+            inner: WriteBatch::default(),
+        }
+    }
+
+    pub fn write(&self, batch: &RocksDBWriteBatch) -> Result<()> {
+        self.db.write(&batch.inner).map_err(internal_error)
     }
 
     pub fn get_for_update<'a>(

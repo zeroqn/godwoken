@@ -1,6 +1,7 @@
 #![allow(clippy::mutable_key_type)]
 
 use crate::{smt_store_impl::SMTStore, traits::KVStore};
+use dashmap::DashMap;
 use gw_common::h256_ext::H256Ext;
 use gw_common::{merkle_utils::calculate_state_checkpoint, smt::SMT, H256};
 use gw_db::schema::{
@@ -13,6 +14,7 @@ use gw_db::schema::{
     META_CHAIN_ID_KEY, META_LAST_VALID_TIP_BLOCK_HASH_KEY, META_MEM_BLOCK_ACCOUNT_SMT_COUNT_KEY,
     META_MEM_BLOCK_ACCOUNT_SMT_ROOT_KEY, META_REVERTED_BLOCK_SMT_ROOT_KEY, META_TIP_BLOCK_HASH_KEY,
 };
+use gw_db::RocksDBWriteBatch;
 use gw_db::{
     error::Error, iter::DBIter, DBIterator, Direction::Forward, IteratorMode, RocksDBTransaction,
 };
@@ -26,20 +28,59 @@ use gw_types::{
     prelude::*,
 };
 use std::collections::HashSet;
+use std::sync::Arc;
 
 /// TODO use a variable instead of hardcode
 const NUMBER_OF_CONFIRMATION: u64 = 10000;
 
+pub enum CacheValue {
+    Exists(Vec<u8>),
+    Deleted,
+}
+
 pub struct StoreTransaction {
     pub(crate) inner: RocksDBTransaction,
+    pub(crate) cache: Arc<DashMap<Vec<u8>, CacheValue>>,
+}
+
+impl StoreTransaction {
+    fn cache_key(col: Col, key: &[u8]) -> Vec<u8> {
+        let mut cache_key = vec![col];
+        cache_key.extend_from_slice(key);
+        cache_key
+    }
+
+    fn write_batch(&self, batch: &mut RocksDBWriteBatch) -> Result<(), Error> {
+        for entry in self.cache.iter() {
+            let key = entry.key().to_owned();
+            let col = key.first().expect("col exists");
+            match &entry.value() {
+                CacheValue::Exists(v) => batch.put(*col, &key[1..], v)?,
+                CacheValue::Deleted => batch.delete(*col, &key[1..])?,
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl KVStore for StoreTransaction {
     fn get(&self, col: Col, key: &[u8]) -> Option<Box<[u8]>> {
-        self.inner
-            .get(col, key)
-            .expect("db operation should be ok")
-            .map(|v| Box::<[u8]>::from(v.as_ref()))
+        let cache_key = Self::cache_key(col, key);
+        if let Some(cache_value) = self.cache.get(&cache_key) {
+            return match &*cache_value {
+                CacheValue::Exists(v) => Some(v.to_owned().into_boxed_slice()),
+                CacheValue::Deleted => None,
+            };
+        }
+
+        match self.inner.get(col, key).expect("db operation should be ok") {
+            Some(v) => {
+                self.cache.insert(cache_key, CacheValue::Exists(v.to_vec()));
+                Some(Box::<[u8]>::from(v.as_ref()))
+            }
+            None => None,
+        }
     }
 
     fn get_iter(&self, col: Col, mode: IteratorMode) -> DBIter {
@@ -49,20 +90,30 @@ impl KVStore for StoreTransaction {
     }
 
     fn insert_raw(&self, col: Col, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        self.inner.put(col, key, value)
+        let cache_key = Self::cache_key(col, key);
+        self.cache
+            .insert(cache_key, CacheValue::Exists(value.to_vec()));
+        Ok(())
     }
 
     fn delete(&self, col: Col, key: &[u8]) -> Result<(), Error> {
-        self.inner.delete(col, key)
+        let cache_key = Self::cache_key(col, key);
+        self.cache.insert(cache_key, CacheValue::Deleted);
+        Ok(())
     }
 }
 
 impl StoreTransaction {
     pub fn commit(&self) -> Result<(), Error> {
+        let mut batch = self.inner.new_write_batch();
+        self.write_batch(&mut batch)?;
+        self.inner.write(&batch)?;
+
         self.inner.commit()
     }
 
     pub fn rollback(&self) -> Result<(), Error> {
+        self.cache.clear();
         self.inner.rollback()
     }
 
