@@ -1,7 +1,6 @@
 //! State DB
 
 use crate::constant::MEMORY_BLOCK_NUMBER;
-use crate::smt_store_impl::CacheSMTStore;
 use crate::{smt_store_impl::CacheSMTStore, traits::KVStore, transaction::StoreTransaction};
 use anyhow::{anyhow, Result};
 use gw_common::merkle_utils::calculate_state_checkpoint;
@@ -362,18 +361,23 @@ impl<'db> StateDBTransaction<'db> {
     fn account_smt_with_merkle_state(
         &self,
         merkle_state: AccountMerkleState,
-    ) -> Result<SMT<CacheSMTStore<'_, Self>>, Error> {
+    ) -> Result<(CacheSMTStore<'_, Self>, SMT<CacheSMTStore<'_, Self>>), Error> {
         let smt_store = self.account_smt_store()?;
-        Ok(SMT::new(merkle_state.merkle_root().unpack(), smt_store))
+        Ok((
+            smt_store.clone(),
+            SMT::new(merkle_state.merkle_root().unpack(), smt_store),
+        ))
     }
 
     pub fn state_tree_with_merkle_state(
         &self,
         merkle_state: AccountMerkleState,
     ) -> Result<StateTree<'_, 'db>, Error> {
+        let (smt_store, smt) = self.account_smt_with_merkle_state(merkle_state.clone())?;
         Ok(StateTree::new(
             self,
-            self.account_smt_with_merkle_state(merkle_state.clone())?,
+            smt,
+            smt_store,
             merkle_state.count().unpack(),
         ))
     }
@@ -382,7 +386,9 @@ impl<'db> StateDBTransaction<'db> {
     // We should separate the StateDB into ReadOnly & WriteOnly,
     // The ReadOnly is for fetching history state, and the write only is for writing new state.
     // This function should only be added on the ReadOnly state.
-    pub fn account_smt(&self) -> Result<SMT<CacheSMTStore<'_, Self>>, Error> {
+    pub fn account_smt(
+        &self,
+    ) -> Result<(CacheSMTStore<'_, Self>, SMT<CacheSMTStore<'_, Self>>), Error> {
         let merkle_state = self.get_checkpoint_merkle_state()?;
         self.account_smt_with_merkle_state(merkle_state)
     }
@@ -554,6 +560,7 @@ impl StateTracker {
 
 pub struct StateTree<'a, 'db> {
     tree: SMT<CacheSMTStore<'a, StateDBTransaction<'db>>>,
+    cache_smt: CacheSMTStore<'a, StateDBTransaction<'db>>,
     account_count: u32,
     db: &'a StateDBTransaction<'db>,
     tracker: StateTracker,
@@ -563,10 +570,12 @@ impl<'a, 'db> StateTree<'a, 'db> {
     pub fn new(
         db: &'a StateDBTransaction<'db>,
         tree: SMT<CacheSMTStore<'a, StateDBTransaction<'db>>>,
+        cache_smt: CacheSMTStore<'a, StateDBTransaction<'db>>,
         account_count: u32,
     ) -> Self {
         StateTree {
             tree,
+            cache_smt,
             db,
             account_count,
             tracker: StateTracker::new(),
