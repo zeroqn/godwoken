@@ -28,7 +28,6 @@ use gw_types::{
     prelude::*,
 };
 use std::collections::HashSet;
-use std::sync::Arc;
 
 /// TODO use a variable instead of hardcode
 const NUMBER_OF_CONFIRMATION: u64 = 10000;
@@ -40,7 +39,7 @@ pub enum CacheValue {
 
 pub struct StoreTransaction {
     pub(crate) inner: RocksDBTransaction,
-    pub(crate) cache: Arc<DashMap<Vec<u8>, CacheValue>>,
+    pub(crate) cache: DashMap<Vec<u8>, CacheValue>,
 }
 
 impl StoreTransaction {
@@ -52,11 +51,10 @@ impl StoreTransaction {
 
     fn write_batch(&self, batch: &mut RocksDBWriteBatch) -> Result<(), Error> {
         for entry in self.cache.iter() {
-            let key = entry.key().to_owned();
-            let col = key.first().expect("col exists");
+            let col = entry.key().first().expect("col exists");
             match &entry.value() {
-                CacheValue::Exists(v) => batch.put(*col, &key[1..], v)?,
-                CacheValue::Deleted => batch.delete(*col, &key[1..])?,
+                CacheValue::Exists(v) => batch.put(*col, &entry.key()[1..], v)?,
+                CacheValue::Deleted => batch.delete(*col, &entry.key()[1..])?,
             }
         }
 
