@@ -1,6 +1,7 @@
 //! State DB
 
 use crate::constant::MEMORY_BLOCK_NUMBER;
+use crate::smt_store_impl::SMTCache;
 use crate::{smt_store_impl::CacheSMTStore, traits::KVStore, transaction::StoreTransaction};
 use anyhow::{anyhow, Result};
 use gw_common::merkle_utils::calculate_state_checkpoint;
@@ -282,6 +283,7 @@ impl CheckPoint {
 pub struct StateDBTransaction<'db> {
     inner: &'db StoreTransaction,
     checkpoint: CheckPoint,
+    smt_cache: SMTCache,
     mode: StateDBMode,
 }
 
@@ -335,6 +337,7 @@ impl<'db> StateDBTransaction<'db> {
     ) -> Result<Self, Error> {
         Ok(StateDBTransaction {
             inner,
+            smt_cache: Default::default(),
             checkpoint,
             mode,
         })
@@ -353,42 +356,36 @@ impl<'db> StateDBTransaction<'db> {
     }
 
     pub fn account_smt_store(&self) -> Result<CacheSMTStore<'_, Self>, Error> {
-        let smt_store =
-            CacheSMTStore::new(COLUMN_ACCOUNT_SMT_LEAF, COLUMN_ACCOUNT_SMT_BRANCH, self);
+        let smt_store = CacheSMTStore::new(
+            COLUMN_ACCOUNT_SMT_LEAF,
+            COLUMN_ACCOUNT_SMT_BRANCH,
+            self,
+            self.smt_cache.clone(),
+        );
         Ok(smt_store)
     }
 
     fn account_smt_with_merkle_state(
         &self,
         merkle_state: AccountMerkleState,
-    ) -> Result<(CacheSMTStore<'_, Self>, SMT<CacheSMTStore<'_, Self>>), Error> {
+    ) -> Result<SMT<CacheSMTStore<'_, Self>>, Error> {
         let smt_store = self.account_smt_store()?;
-        Ok((
-            smt_store.clone(),
-            SMT::new(merkle_state.merkle_root().unpack(), smt_store),
-        ))
+        Ok(SMT::new(merkle_state.merkle_root().unpack(), smt_store))
     }
 
     pub fn state_tree_with_merkle_state(
         &self,
         merkle_state: AccountMerkleState,
     ) -> Result<StateTree<'_, 'db>, Error> {
-        let (smt_store, smt) = self.account_smt_with_merkle_state(merkle_state.clone())?;
-        Ok(StateTree::new(
-            self,
-            smt,
-            smt_store,
-            merkle_state.count().unpack(),
-        ))
+        let smt = self.account_smt_with_merkle_state(merkle_state.clone())?;
+        Ok(StateTree::new(self, smt, merkle_state.count().unpack()))
     }
 
     // FIXME: This method may running into inconsistent state if current state is dirty.
     // We should separate the StateDB into ReadOnly & WriteOnly,
     // The ReadOnly is for fetching history state, and the write only is for writing new state.
     // This function should only be added on the ReadOnly state.
-    pub fn account_smt(
-        &self,
-    ) -> Result<(CacheSMTStore<'_, Self>, SMT<CacheSMTStore<'_, Self>>), Error> {
+    pub fn account_smt(&self) -> Result<SMT<CacheSMTStore<'_, Self>>, Error> {
         let merkle_state = self.get_checkpoint_merkle_state()?;
         self.account_smt_with_merkle_state(merkle_state)
     }
@@ -560,7 +557,6 @@ impl StateTracker {
 
 pub struct StateTree<'a, 'db> {
     tree: SMT<CacheSMTStore<'a, StateDBTransaction<'db>>>,
-    cache_smt: CacheSMTStore<'a, StateDBTransaction<'db>>,
     account_count: u32,
     db: &'a StateDBTransaction<'db>,
     tracker: StateTracker,
@@ -570,12 +566,10 @@ impl<'a, 'db> StateTree<'a, 'db> {
     pub fn new(
         db: &'a StateDBTransaction<'db>,
         tree: SMT<CacheSMTStore<'a, StateDBTransaction<'db>>>,
-        cache_smt: CacheSMTStore<'a, StateDBTransaction<'db>>,
         account_count: u32,
     ) -> Self {
         StateTree {
             tree,
-            cache_smt,
             db,
             account_count,
             tracker: StateTracker::new(),

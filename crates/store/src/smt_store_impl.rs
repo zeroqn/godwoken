@@ -159,12 +159,7 @@ pub struct CacheSMTStore<'a, DB: KVStore> {
 }
 
 impl<'a, DB: KVStore> CacheSMTStore<'a, DB> {
-    pub fn new(leaf_col: Col, branch_col: Col, store: &'a DB) -> Self {
-        let cache = Default::default();
-        let inner = SMTStore::new(leaf_col, branch_col, store);
-        CacheSMTStore { cache, inner }
-    }
-    pub fn new_with_cache(leaf_col: Col, branch_col: Col, store: &'a DB, cache: SMTCache) -> Self {
+    pub fn new(leaf_col: Col, branch_col: Col, store: &'a DB, cache: SMTCache) -> Self {
         let inner = SMTStore::new(leaf_col, branch_col, store);
         CacheSMTStore { cache, inner }
     }
