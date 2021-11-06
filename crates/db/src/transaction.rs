@@ -41,6 +41,10 @@ impl RocksDBTransaction {
         self.db.write(&batch.inner).map_err(internal_error)
     }
 
+    pub fn write_sync(&self, batch: &RocksDBWriteBatch) -> Result<()> {
+        self.db.write(&batch.inner).map_err(internal_error)
+    }
+
     pub fn get_for_update<'a>(
         &self,
         col: Col,
