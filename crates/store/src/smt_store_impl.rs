@@ -114,21 +114,19 @@ impl SMTCache {
         branch_col: Col,
         write_batch: &mut RocksDBWriteBatch,
     ) -> Result<(), Error> {
-        log::info!(
-            "smt cache write branches {}, leaves {}",
-            self.branches.len(),
-            self.leaves.len()
-        );
+        let mut branch_count = 0;
         for branch in self.branches.iter() {
             let key: packed::SMTBranchKey = branch.key().pack();
             match branch.value() {
                 CacheValue::Exists(node) => {
                     let node: packed::SMTBranchNode = node.pack();
                     write_batch.put(branch_col, key.as_slice(), node.as_slice())?;
+                    branch_count += 1;
                 }
                 CacheValue::Deleted => {
                     let node = FLAG_DELETE_VALUE.to_be_bytes();
                     write_batch.put(branch_col, key.as_slice(), &node)?;
+                    branch_count += 1;
                 }
                 CacheValue::None => {
                     // write_batch.delete(branch_col, key.as_slice())?;
@@ -136,21 +134,31 @@ impl SMTCache {
             }
         }
 
+        let mut leaf_count = 0;
         for leaf in self.leaves.iter() {
             let key = leaf.key();
             match leaf.value() {
                 CacheValue::Exists(leaf) => {
                     write_batch.put(leaf_col, key.as_slice(), leaf.as_slice())?;
+                    leaf_count += 1;
                 }
                 CacheValue::Deleted => {
                     let leaf = FLAG_DELETE_VALUE.to_be_bytes();
                     write_batch.put(leaf_col, key.as_slice(), &leaf)?;
+                    leaf_count += 1;
                 }
                 CacheValue::None => {
                     // write_batch.delete(leaf_col, key.as_slice())?;
                 }
             }
         }
+
+        log::info!(
+            "smt cache write branches {}, leaves {}, total {}",
+            branch_count,
+            leaf_count,
+            write_batch.len(),
+        );
 
         Ok(())
     }

@@ -119,7 +119,7 @@ impl StoreTransaction {
             &mut batch,
         )?;
         // self.write_batch(&mut batch)?;
-        self.inner.write_sync(&batch)?;
+        self.inner.write(&batch)?;
         self.inner.commit()
     }
 
