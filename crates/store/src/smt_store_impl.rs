@@ -114,6 +114,11 @@ impl SMTCache {
         branch_col: Col,
         write_batch: &mut RocksDBWriteBatch,
     ) -> Result<(), Error> {
+        log::info!(
+            "smt cache write branches {}, leaves {}",
+            self.branches.len(),
+            self.leaves.len()
+        );
         for branch in self.branches.iter() {
             let key: packed::SMTBranchKey = branch.key().pack();
             match branch.value() {
@@ -125,7 +130,9 @@ impl SMTCache {
                     let node = FLAG_DELETE_VALUE.to_be_bytes();
                     write_batch.put(branch_col, key.as_slice(), &node)?;
                 }
-                CacheValue::None => (),
+                CacheValue::None => {
+                    write_batch.delete(branch_col, key.as_slice())?;
+                }
             }
         }
 
@@ -139,7 +146,9 @@ impl SMTCache {
                     let leaf = FLAG_DELETE_VALUE.to_be_bytes();
                     write_batch.put(leaf_col, key.as_slice(), &leaf)?;
                 }
-                CacheValue::None => (),
+                CacheValue::None => {
+                    write_batch.delete(leaf_col, key.as_slice())?;
+                }
             }
         }
 
