@@ -1,6 +1,7 @@
 //! State DB
 
 use crate::constant::MEMORY_BLOCK_NUMBER;
+use crate::smt_store_impl::CacheSMTStore;
 use crate::{smt_store_impl::SMTStore, traits::KVStore, transaction::StoreTransaction};
 use anyhow::{anyhow, Result};
 use gw_common::merkle_utils::calculate_state_checkpoint;
@@ -352,15 +353,16 @@ impl<'db> StateDBTransaction<'db> {
         }
     }
 
-    pub fn account_smt_store(&self) -> Result<SMTStore<'_, Self>, Error> {
+    pub fn account_smt_store(&self) -> Result<CacheSMTStore<'_, Self>, Error> {
         let smt_store = SMTStore::new(COLUMN_ACCOUNT_SMT_LEAF, COLUMN_ACCOUNT_SMT_BRANCH, self);
-        Ok(smt_store)
+        let cache_store = CacheSMTStore::new(smt_store, self.inner.account_smt_cache.clone());
+        Ok(cache_store)
     }
 
     fn account_smt_with_merkle_state(
         &self,
         merkle_state: AccountMerkleState,
-    ) -> Result<SMT<SMTStore<'_, Self>>, Error> {
+    ) -> Result<SMT<CacheSMTStore<'_, Self>>, Error> {
         let smt_store = self.account_smt_store()?;
         Ok(SMT::new(merkle_state.merkle_root().unpack(), smt_store))
     }
@@ -377,7 +379,7 @@ impl<'db> StateDBTransaction<'db> {
     // We should separate the StateDB into ReadOnly & WriteOnly,
     // The ReadOnly is for fetching history state, and the write only is for writing new state.
     // This function should only be added on the ReadOnly state.
-    pub fn account_smt(&self) -> Result<SMT<SMTStore<'_, Self>>, Error> {
+    pub fn account_smt(&self) -> Result<SMT<CacheSMTStore<'_, Self>>, Error> {
         let merkle_state = self.get_checkpoint_merkle_state()?;
         self.account_smt_with_merkle_state(merkle_state)
     }
@@ -548,7 +550,7 @@ impl StateTracker {
 }
 
 pub struct StateTree<'a, 'db> {
-    tree: SMT<SMTStore<'a, StateDBTransaction<'db>>>,
+    tree: SMT<CacheSMTStore<'a, StateDBTransaction<'db>>>,
     account_count: u32,
     db: &'a StateDBTransaction<'db>,
     tracker: StateTracker,
@@ -557,7 +559,7 @@ pub struct StateTree<'a, 'db> {
 impl<'a, 'db> StateTree<'a, 'db> {
     pub fn new(
         db: &'a StateDBTransaction<'db>,
-        tree: SMT<SMTStore<'a, StateDBTransaction<'db>>>,
+        tree: SMT<CacheSMTStore<'a, StateDBTransaction<'db>>>,
         account_count: u32,
     ) -> Self {
         StateTree {

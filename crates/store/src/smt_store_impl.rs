@@ -98,6 +98,7 @@ impl<'a, DB: KVStore> Store<H256> for SMTStore<'a, DB> {
 pub enum CacheValue<V> {
     Exists(V),
     Deleted,
+    None,
 }
 
 #[derive(Clone)]
@@ -124,6 +125,7 @@ impl SMTCache {
                     let node = FLAG_DELETE_VALUE.to_be_bytes();
                     write_batch.put(branch_col, key.as_slice(), &node)?;
                 }
+                CacheValue::None => (),
             }
         }
 
@@ -137,10 +139,16 @@ impl SMTCache {
                     let leaf = FLAG_DELETE_VALUE.to_be_bytes();
                     write_batch.put(leaf_col, key.as_slice(), &leaf)?;
                 }
+                CacheValue::None => (),
             }
         }
 
         Ok(())
+    }
+
+    pub fn clear(&self) {
+        self.branches.clear();
+        self.leaves.clear();
     }
 }
 
@@ -159,8 +167,7 @@ pub struct CacheSMTStore<'a, DB: KVStore> {
 }
 
 impl<'a, DB: KVStore> CacheSMTStore<'a, DB> {
-    pub fn new(leaf_col: Col, branch_col: Col, store: &'a DB, cache: SMTCache) -> Self {
-        let inner = SMTStore::new(leaf_col, branch_col, store);
+    pub fn new(inner: SMTStore<'a, DB>, cache: SMTCache) -> Self {
         CacheSMTStore { cache, inner }
     }
 }
@@ -171,6 +178,7 @@ impl<'a, DB: KVStore> Store<H256> for CacheSMTStore<'a, DB> {
             return match &*cache_value {
                 CacheValue::Exists(node) => Ok(Some(node.to_owned())),
                 CacheValue::Deleted => Ok(None),
+                CacheValue::None => Ok(None),
             };
         }
 
@@ -182,7 +190,12 @@ impl<'a, DB: KVStore> Store<H256> for CacheSMTStore<'a, DB> {
 
                 Ok(Some(node))
             }
-            None => Ok(None),
+            None => {
+                let key = branch_key.to_owned();
+                self.cache.branches.insert(key, CacheValue::None);
+
+                Ok(None)
+            }
         }
     }
 
@@ -191,6 +204,7 @@ impl<'a, DB: KVStore> Store<H256> for CacheSMTStore<'a, DB> {
             return match *cache_value {
                 CacheValue::Exists(leaf) => Ok(Some(leaf.to_owned())),
                 CacheValue::Deleted => Ok(None),
+                CacheValue::None => Ok(None),
             };
         }
 
@@ -201,7 +215,12 @@ impl<'a, DB: KVStore> Store<H256> for CacheSMTStore<'a, DB> {
 
                 Ok(Some(leaf))
             }
-            None => Ok(None),
+            None => {
+                let key = *leaf_key;
+                self.cache.leaves.insert(key, CacheValue::None);
+
+                Ok(None)
+            }
         }
     }
 

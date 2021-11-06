@@ -47,6 +47,7 @@ impl<'a> Store {
         StoreTransaction {
             inner: self.db.transaction(),
             cache: Default::default(),
+            account_smt_cache: Default::default(),
         }
     }
 

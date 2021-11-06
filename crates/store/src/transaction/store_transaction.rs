@@ -1,17 +1,19 @@
 #![allow(clippy::mutable_key_type)]
 
+use crate::smt_store_impl::SMTCache;
 use crate::{smt_store_impl::SMTStore, traits::KVStore};
 use dashmap::DashMap;
 use gw_common::h256_ext::H256Ext;
 use gw_common::{merkle_utils::calculate_state_checkpoint, smt::SMT, H256};
 use gw_db::schema::{
-    Col, COLUMN_ASSET_SCRIPT, COLUMN_BAD_BLOCK_CHALLENGE_TARGET, COLUMN_BLOCK,
-    COLUMN_BLOCK_DEPOSIT_REQUESTS, COLUMN_BLOCK_GLOBAL_STATE, COLUMN_BLOCK_SMT_BRANCH,
-    COLUMN_BLOCK_SMT_LEAF, COLUMN_BLOCK_STATE_RECORD, COLUMN_CHECKPOINT, COLUMN_INDEX,
-    COLUMN_L2BLOCK_COMMITTED_INFO, COLUMN_META, COLUMN_REVERTED_BLOCK_SMT_BRANCH,
-    COLUMN_REVERTED_BLOCK_SMT_LEAF, COLUMN_REVERTED_BLOCK_SMT_ROOT, COLUMN_TRANSACTION,
-    COLUMN_TRANSACTION_INFO, COLUMN_TRANSACTION_RECEIPT, META_BLOCK_SMT_ROOT_KEY,
-    META_CHAIN_ID_KEY, META_LAST_VALID_TIP_BLOCK_HASH_KEY, META_MEM_BLOCK_ACCOUNT_SMT_COUNT_KEY,
+    Col, COLUMN_ACCOUNT_SMT_BRANCH, COLUMN_ACCOUNT_SMT_LEAF, COLUMN_ASSET_SCRIPT,
+    COLUMN_BAD_BLOCK_CHALLENGE_TARGET, COLUMN_BLOCK, COLUMN_BLOCK_DEPOSIT_REQUESTS,
+    COLUMN_BLOCK_GLOBAL_STATE, COLUMN_BLOCK_SMT_BRANCH, COLUMN_BLOCK_SMT_LEAF,
+    COLUMN_BLOCK_STATE_RECORD, COLUMN_CHECKPOINT, COLUMN_INDEX, COLUMN_L2BLOCK_COMMITTED_INFO,
+    COLUMN_META, COLUMN_REVERTED_BLOCK_SMT_BRANCH, COLUMN_REVERTED_BLOCK_SMT_LEAF,
+    COLUMN_REVERTED_BLOCK_SMT_ROOT, COLUMN_TRANSACTION, COLUMN_TRANSACTION_INFO,
+    COLUMN_TRANSACTION_RECEIPT, META_BLOCK_SMT_ROOT_KEY, META_CHAIN_ID_KEY,
+    META_LAST_VALID_TIP_BLOCK_HASH_KEY, META_MEM_BLOCK_ACCOUNT_SMT_COUNT_KEY,
     META_MEM_BLOCK_ACCOUNT_SMT_ROOT_KEY, META_REVERTED_BLOCK_SMT_ROOT_KEY, META_TIP_BLOCK_HASH_KEY,
 };
 use gw_db::RocksDBWriteBatch;
@@ -40,6 +42,7 @@ pub enum CacheValue {
 pub struct StoreTransaction {
     pub(crate) inner: RocksDBTransaction,
     pub(crate) cache: DashMap<Vec<u8>, CacheValue>,
+    pub(crate) account_smt_cache: SMTCache,
 }
 
 impl StoreTransaction {
@@ -64,21 +67,25 @@ impl StoreTransaction {
 
 impl KVStore for StoreTransaction {
     fn get(&self, col: Col, key: &[u8]) -> Option<Box<[u8]>> {
-        let cache_key = Self::cache_key(col, key);
-        if let Some(cache_value) = self.cache.get(&cache_key) {
-            return match &*cache_value {
-                CacheValue::Exists(v) => Some(v.to_owned().into_boxed_slice()),
-                CacheValue::Deleted => None,
-            };
-        }
-
-        match self.inner.get(col, key).expect("db operation should be ok") {
-            Some(v) => {
-                self.cache.insert(cache_key, CacheValue::Exists(v.to_vec()));
-                Some(Box::<[u8]>::from(v.as_ref()))
-            }
-            None => None,
-        }
+        // let cache_key = Self::cache_key(col, key);
+        // if let Some(cache_value) = self.cache.get(&cache_key) {
+        //     return match &*cache_value {
+        //         CacheValue::Exists(v) => Some(v.to_owned().into_boxed_slice()),
+        //         CacheValue::Deleted => None,
+        //     };
+        // }
+        //
+        // match self.inner.get(col, key).expect("db operation should be ok") {
+        //     Some(v) => {
+        //         self.cache.insert(cache_key, CacheValue::Exists(v.to_vec()));
+        //         Some(Box::<[u8]>::from(v.as_ref()))
+        //     }
+        //     None => None,
+        // }
+        self.inner
+            .get(col, key)
+            .expect("db operation should be ok")
+            .map(|v| Box::<[u8]>::from(v.as_ref()))
     }
 
     fn get_iter(&self, col: Col, mode: IteratorMode) -> DBIter {
@@ -88,30 +95,37 @@ impl KVStore for StoreTransaction {
     }
 
     fn insert_raw(&self, col: Col, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        let cache_key = Self::cache_key(col, key);
-        self.cache
-            .insert(cache_key, CacheValue::Exists(value.to_vec()));
-        Ok(())
+        self.inner.put(col, key, value)
+        // let cache_key = Self::cache_key(col, key);
+        // self.cache
+        //     .insert(cache_key, CacheValue::Exists(value.to_vec()));
+        // Ok(())
     }
 
     fn delete(&self, col: Col, key: &[u8]) -> Result<(), Error> {
-        let cache_key = Self::cache_key(col, key);
-        self.cache.insert(cache_key, CacheValue::Deleted);
-        Ok(())
+        self.inner.delete(col, key)
+        // let cache_key = Self::cache_key(col, key);
+        // self.cache.insert(cache_key, CacheValue::Deleted);
+        // Ok(())
     }
 }
 
 impl StoreTransaction {
     pub fn commit(&self) -> Result<(), Error> {
         let mut batch = self.inner.new_write_batch();
-        self.write_batch(&mut batch)?;
+        self.account_smt_cache.write(
+            COLUMN_ACCOUNT_SMT_LEAF,
+            COLUMN_ACCOUNT_SMT_BRANCH,
+            &mut batch,
+        )?;
+        // self.write_batch(&mut batch)?;
         self.inner.write(&batch)?;
-
         self.inner.commit()
     }
 
     pub fn rollback(&self) -> Result<(), Error> {
         self.cache.clear();
+        self.account_smt_cache.clear();
         self.inner.rollback()
     }
 
