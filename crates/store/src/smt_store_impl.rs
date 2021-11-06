@@ -131,7 +131,7 @@ impl SMTCache {
                     write_batch.put(branch_col, key.as_slice(), &node)?;
                 }
                 CacheValue::None => {
-                    write_batch.delete(branch_col, key.as_slice())?;
+                    // write_batch.delete(branch_col, key.as_slice())?;
                 }
             }
         }
@@ -147,7 +147,7 @@ impl SMTCache {
                     write_batch.put(leaf_col, key.as_slice(), &leaf)?;
                 }
                 CacheValue::None => {
-                    write_batch.delete(leaf_col, key.as_slice())?;
+                    // write_batch.delete(leaf_col, key.as_slice())?;
                 }
             }
         }
