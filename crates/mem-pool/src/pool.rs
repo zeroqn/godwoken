@@ -525,10 +525,10 @@ impl MemPool {
     /// Notify new tip
     /// this method update current state of mem pool
     pub fn notify_new_tip(&mut self, new_tip: H256) -> Result<()> {
-        self.update_state(new_tip)?;
+        // self.update_state(new_tip)?;
 
         // reset pool state
-        // self.reset(Some(self.current_tip().0), Some(new_tip))?;
+        self.reset(Some(self.current_tip().0), Some(new_tip))?;
         Ok(())
     }
 
