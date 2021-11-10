@@ -7,7 +7,7 @@ use gw_types::{
 };
 use smol::Task;
 
-pub trait MemPoolProvider: Sync + Send {
+pub trait MemPoolProvider {
     fn estimate_next_blocktime(&self, last_blocktime: Option<Duration>) -> Task<Result<Duration>>;
     fn collect_deposit_cells(&self) -> Task<Result<Vec<DepositInfo>>>;
     fn query_available_custodians(
@@ -18,6 +18,6 @@ pub trait MemPoolProvider: Sync + Send {
     ) -> Task<Result<CollectedCustodianCells>>;
 }
 
-pub trait MemPoolErrorTxHandler: Send {
+pub trait MemPoolErrorTxHandler {
     fn handle_error_receipt(&mut self, receipt: ErrorTxReceipt) -> Task<Result<()>>;
 }

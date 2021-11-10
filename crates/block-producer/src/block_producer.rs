@@ -16,8 +16,7 @@ use gw_config::{BlockProducerConfig, DebugConfig};
 use gw_generator::Generator;
 use gw_jsonrpc_types::test_mode::TestModePayload;
 use gw_mem_pool::{
-    custodian::to_custodian_cell,
-    pool::{MemPool, OutputParam},
+    custodian::to_custodian_cell, default_provider::DefaultMemPoolProvider, pool::OutputParam,
 };
 use gw_poa::{PoA, ShouldIssueBlock};
 use gw_rpc_client::rpc_client::RPCClient;
@@ -126,11 +125,13 @@ async fn resolve_tx_deps(rpc_client: &RPCClient, tx_hash: [u8; 32]) -> Result<Ve
     Ok(cells)
 }
 
+type MemPool = gw_mem_pool::pool::MemPool<DefaultMemPoolProvider>;
+
 pub struct BlockProducer {
     rollup_config_hash: H256,
     store: Store,
     chain: Arc<Mutex<Chain>>,
-    mem_pool: Arc<Mutex<MemPool>>,
+    mem_pool: MemPool,
     generator: Arc<Generator>,
     poa: PoA,
     wallet: Wallet,
@@ -149,7 +150,7 @@ impl BlockProducer {
         store: Store,
         generator: Arc<Generator>,
         chain: Arc<Mutex<Chain>>,
-        mem_pool: Arc<Mutex<MemPool>>,
+        mem_pool: MemPool,
         rpc_client: RPCClient,
         ckb_genesis_info: CKBGenesisInfo,
         config: BlockProducerConfig,
@@ -323,10 +324,10 @@ impl BlockProducer {
         let mut retry_count = 0;
         while retry_count <= MAX_BLOCK_OUTPUT_PARAM_RETRY_COUNT {
             // get txs & withdrawal requests from mem pool
-            let (opt_finalized_custodians, block_param) = {
-                let mem_pool = self.mem_pool.lock().await;
-                mem_pool.output_mem_block(&OutputParam::new(retry_count))?
-            };
+            let (opt_finalized_custodians, block_param) = self
+                .mem_pool
+                .output_mem_block(OutputParam::new(retry_count))?
+                .await?;
             let deposit_cells = block_param.deposits.clone();
 
             // produce block
@@ -392,7 +393,7 @@ impl BlockProducer {
                         "[produce_next_block] Failed to composite submitting transaction: {}",
                         err
                     );
-                    self.mem_pool.lock().await.reset_mem_block()?;
+                    self.mem_pool.reset()?;
                     return Err(err);
                 }
             };
@@ -456,7 +457,6 @@ impl BlockProducer {
                 log::error!("Submitting l2 block error: {}", err);
                 self.poa.reset_current_round();
 
-                // dumping script error transactions
                 let err_str = err.to_string();
                 if err_str.contains(TRANSACTION_SRIPT_ERROR)
                     || err_str.contains(TRANSACTION_EXCEEDED_MAXIMUM_BLOCK_BYTES_ERROR)
@@ -472,7 +472,7 @@ impl BlockProducer {
                 } else {
                     log::debug!("Skip dumping non-script-error tx");
                 }
-                self.mem_pool.lock().await.reset_mem_block()?;
+                self.mem_pool.reset()?;
 
                 Ok(None)
             }

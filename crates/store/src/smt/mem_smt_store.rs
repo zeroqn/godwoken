@@ -10,6 +10,7 @@ use gw_common::{
     },
     H256,
 };
+
 #[derive(Debug, PartialEq, Eq)]
 enum Value<V> {
     Deleted,

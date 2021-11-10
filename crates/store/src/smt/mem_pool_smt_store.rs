@@ -1,143 +1,179 @@
 //! Implement SMTStore trait
 
-use crate::{traits::KVStore, transaction::StoreTransaction};
+use super::Columns;
+
+use crate::{
+    traits::KVStore,
+    transaction::{mem_pool_store::MultiMemStore, StoreTransaction},
+};
+
+use dashmap::DashMap;
 use gw_common::{
     sparse_merkle_tree::{
         error::Error as SMTError,
-        traits::Store,
+        merge::MergeValue,
+        traits::{Store, Value as SMTValue},
         tree::{BranchKey, BranchNode},
     },
     H256,
 };
-use gw_types::{packed, prelude::*, store};
 
-use super::Columns;
+use std::sync::Arc;
 
 const DELETED_FLAG: u8 = 0;
+
+#[derive(Debug, PartialEq, Eq)]
+enum Value<V> {
+    Deleted,
+    Exist(V),
+    None,
+}
+
+#[derive(Default)]
+pub struct MultiMemSMTStore {
+    // branches: DashMap<BranchKey, Value<BranchNode>>,
+    leaves: DashMap<H256, Value<H256>>,
+}
+
+impl MultiMemSMTStore {
+    pub fn update_leaf(&self, leaf_key: H256, leaf: H256) {
+        let node = MergeValue::from_h256(leaf.to_h256());
+        if !node.is_zero() {
+            self.leaves.insert(leaf_key, Value::Exist(leaf));
+        } else {
+            self.leaves.insert(leaf_key, Value::Deleted);
+        }
+    }
+
+    pub fn reset(&self) {
+        self.leaves.clear();
+        self.leaves.shrink_to_fit();
+    }
+}
 
 /// MemPool SMTStore
 /// This is a mem-pool layer build upon SMTStore
 pub struct MemPoolSMTStore<'a> {
-    store: &'a StoreTransaction,
-    mem_pool_columns: Columns,
-    under_layer_columns: Columns,
+    mem_store: Arc<MultiMemStore>,
+    db_store: &'a StoreTransaction,
+    db_columns: Columns,
 }
 
 impl<'a> MemPoolSMTStore<'a> {
     pub fn new(
-        mem_pool_columns: Columns,
-        under_layer_columns: Columns,
-        store: &'a StoreTransaction,
+        mem_store: Arc<MultiMemStore>,
+        db_store: &'a StoreTransaction,
+        db_columns: Columns,
     ) -> Self {
         MemPoolSMTStore {
-            mem_pool_columns,
-            under_layer_columns,
-            store,
+            mem_store,
+            db_store,
+            db_columns,
         }
     }
 
-    pub fn inner_store(&self) -> &StoreTransaction {
-        self.store
+    pub fn db_store(&self) -> &StoreTransaction {
+        self.db_store
+    }
+
+    pub fn mem_store(&self) -> &MultiMemStore {
+        &self.mem_store
     }
 }
 
 impl<'a> Store<H256> for MemPoolSMTStore<'a> {
-    fn get_branch(&self, branch_key: &BranchKey) -> Result<Option<BranchNode>, SMTError> {
-        let branch_key: packed::SMTBranchKey = branch_key.pack();
-        let node_slice = match self
-            .inner_store()
-            .get(self.mem_pool_columns.branch_col, branch_key.as_slice())
-        {
-            Some(slice) if slice.as_ref() == [DELETED_FLAG] => return Ok(None),
-            Some(slice) => slice,
-            None => match self
-                .inner_store()
-                .get(self.under_layer_columns.branch_col, branch_key.as_slice())
-            {
-                Some(slice) => slice,
-                None => return Ok(None),
-            },
-        };
-
-        let branch = store::SMTBranchNode::uncheck_from_slice(node_slice.as_ref());
-        Ok(Some(BranchNode::from(&branch)))
+    fn get_branch(&self, _key: &BranchKey) -> Result<Option<BranchNode>, SMTError> {
+        unreachable!();
+        // if let Some(v) = self.mem_store.smt().branches.get(branch_key) {
+        //     return match v.value() {
+        //         Value::Exist(branch) => Ok(Some(branch.to_owned())),
+        //         Value::Deleted => Ok(None),
+        //         Value::None => Ok(None),
+        //     };
+        // }
+        //
+        // let branch_key: packed::SMTBranchKey = key.pack();
+        // let branch_col = self.db_columns.branch_col;
+        // match self.db_store.get(branch_col, branch_key.as_slice()) {
+        //     Some(slice) if slice.as_ref() == [DELETED_FLAG] => {
+        //         let smt = self.mem_store().smt();
+        //         smt.branches.insert(*key, Value::Deleted);
+        //         Ok(None)
+        //     }
+        //     Some(slice) => {
+        //         let branch = {
+        //             let reader =
+        //                 packed::SMTBranchNodeReader::from_slice_should_be_ok(slice.as_ref());
+        //             reader.to_entity().unpack()
+        //         };
+        //
+        //         let smt = self.mem_store().smt();
+        //         smt.branches.insert(*key, Value::Exist(branch.clone()));
+        //
+        //         Ok(Some(branch))
+        //     }
+        //     None => {
+        //         self.mem_store().smt().branches.insert(*key, Value::None);
+        //         Ok(None)
+        //     }
+        // }
     }
 
     fn get_leaf(&self, leaf_key: &H256) -> Result<Option<H256>, SMTError> {
-        let leaf_slice = match self
-            .inner_store()
-            .get(self.mem_pool_columns.leaf_col, leaf_key.as_slice())
-        {
-            Some(slice) if slice.as_ref() == [DELETED_FLAG] => return Ok(None),
-            Some(slice) => slice,
-            None => match self
-                .inner_store()
-                .get(self.under_layer_columns.leaf_col, leaf_key.as_slice())
-            {
-                Some(slice) => slice,
-                None => return Ok(None),
-            },
-        };
-
-        if 32 != leaf_slice.len() {
-            return Err(SMTError::Store("get crrupted leaf".to_string()));
+        if let Some(v) = self.mem_store.smt().leaves.get(leaf_key) {
+            return match v.value() {
+                Value::Exist(leaf) => Ok(Some(*leaf)),
+                Value::Deleted => Ok(None),
+                Value::None => Ok(None),
+            };
         }
 
-        let mut leaf = [0u8; 32];
-        leaf.copy_from_slice(leaf_slice.as_ref());
-        Ok(Some(H256::from(leaf)))
+        let leaf_col = self.db_columns.leaf_col;
+        match self.db_store.get(leaf_col, leaf_key.as_slice()) {
+            Some(slice) if slice.as_ref() == [DELETED_FLAG] => {
+                let smt = self.mem_store().smt();
+                smt.leaves.insert(*leaf_key, Value::Deleted);
+                Ok(None)
+            }
+            Some(slice) if slice.len() == 32 => {
+                let mut leaf = [0u8; 32];
+                leaf.copy_from_slice(slice.as_ref());
+
+                let smt = self.mem_store().smt();
+                smt.leaves.insert(*leaf_key, Value::Exist(H256::from(leaf)));
+
+                Ok(Some(H256::from(leaf)))
+            }
+            None => {
+                self.mem_store().smt().leaves.insert(*leaf_key, Value::None);
+                Ok(None)
+            }
+            _ => Err(SMTError::Store("get crrupted leaf".to_string())),
+        }
     }
 
-    fn insert_branch(&mut self, branch_key: BranchKey, branch: BranchNode) -> Result<(), SMTError> {
-        let branch_key: packed::SMTBranchKey = branch_key.pack();
-        let branch = store::SMTBranchNode::from(&branch);
-
-        self.store
-            .insert_raw(
-                self.mem_pool_columns.branch_col,
-                branch_key.as_slice(),
-                branch.as_slice(),
-            )
-            .map_err(|err| SMTError::Store(format!("insert error {}", err)))?;
-
-        Ok(())
+    fn insert_branch(&mut self, _k: BranchKey, _branch: BranchNode) -> Result<(), SMTError> {
+        unreachable!();
+        // let smt = self.mem_store.smt();
+        // smt.branches.insert(k, Value::Exist(branch));
+        // Ok(())
     }
 
     fn insert_leaf(&mut self, leaf_key: H256, leaf: H256) -> Result<(), SMTError> {
-        self.store
-            .insert_raw(
-                self.mem_pool_columns.leaf_col,
-                leaf_key.as_slice(),
-                leaf.as_slice(),
-            )
-            .map_err(|err| SMTError::Store(format!("insert error {}", err)))?;
-
+        let smt = self.mem_store.smt();
+        smt.leaves.insert(leaf_key, Value::Exist(leaf));
         Ok(())
     }
 
-    fn remove_branch(&mut self, branch_key: &BranchKey) -> Result<(), SMTError> {
-        let branch_key: packed::SMTBranchKey = branch_key.pack();
-
-        self.store
-            .insert_raw(
-                self.mem_pool_columns.branch_col,
-                branch_key.as_slice(),
-                &[DELETED_FLAG],
-            )
-            .map_err(|err| SMTError::Store(format!("delete error {}", err)))?;
-
-        Ok(())
+    fn remove_branch(&mut self, _key: &BranchKey) -> Result<(), SMTError> {
+        unreachable!();
+        // self.mem_store.smt().branches.insert(*key, Value::Deleted);
+        // Ok(())
     }
 
     fn remove_leaf(&mut self, leaf_key: &H256) -> Result<(), SMTError> {
-        self.store
-            .insert_raw(
-                self.mem_pool_columns.leaf_col,
-                leaf_key.as_slice(),
-                &[DELETED_FLAG],
-            )
-            .map_err(|err| SMTError::Store(format!("delete error {}", err)))?;
-
+        let smt = self.mem_store.smt();
+        smt.leaves.insert(*leaf_key, Value::Deleted);
         Ok(())
     }
 }

@@ -2191,6 +2191,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "faster-hex 0.4.1",
+ "futures",
  "gw-challenge",
  "gw-common",
  "gw-config",
@@ -2298,6 +2299,7 @@ name = "gw-store"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dashmap",
  "gw-common",
  "gw-config",
  "gw-db",

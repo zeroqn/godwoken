@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use ckb_types::prelude::{Builder, Entity};
 use gw_chain::chain::Chain;
 use gw_challenge::offchain::OffChainMockContext;
 use gw_common::{blake2b::new_blake2b, state::State, H256};
@@ -16,7 +15,7 @@ use gw_jsonrpc_types::{
     },
     test_mode::{ShouldProduceBlock, TestModePayload},
 };
-use gw_mem_pool::batch::{BatchError, MemPoolBatch};
+use gw_mem_pool::{default_provider::DefaultMemPoolProvider, pool};
 use gw_store::{chain_view::ChainView, state::state_db::StateContext, Store};
 use gw_traits::CodeStore;
 use gw_types::{
@@ -38,6 +37,7 @@ static PROFILER_GUARD: Lazy<std::sync::Mutex<Option<ProfilerGuard>>> =
 
 // type alias
 type RPCServer = Arc<Server<MapRouter>>;
+type MemPool = pool::MemPool<DefaultMemPoolProvider>;
 type AccountID = Uint32;
 type JsonH256 = ckb_fixed_hash::H256;
 type BoxedTestsRPCImpl = Box<dyn TestModeRPC + Send + Sync>;
@@ -49,7 +49,7 @@ const INTERNAL_ERROR_ERR_CODE: i64 = -32099;
 const METHOD_NOT_AVAILABLE_ERR_CODE: i64 = -32601;
 const INVALID_PARAM_ERR_CODE: i64 = -32602;
 const INVALID_REQUEST: i64 = -32600;
-const MEMPOOL_IS_FULL_ERR_CODE: i64 = -32098;
+// const MEMPOOL_IS_FULL_ERR_CODE: i64 = -32098;
 
 fn header_not_found_err() -> RpcError {
     RpcError::Provided {
@@ -100,8 +100,8 @@ pub struct Registry {
     mem_pool_config: MemPoolConfig,
     backend_info: Vec<BackendInfo>,
     node_mode: NodeMode,
-    mem_pool_batch: Option<MemPoolBatch>,
     server_config: RPCServerConfig,
+    mem_pool: Option<MemPool>,
 }
 
 impl Registry {
@@ -116,8 +116,8 @@ impl Registry {
         offchain_mock_context: Option<OffChainMockContext>,
         mem_pool_config: MemPoolConfig,
         node_mode: NodeMode,
-        mem_pool_batch: Option<MemPoolBatch>,
         server_config: RPCServerConfig,
+        mem_pool: Option<MemPool>,
     ) -> Self
     where
         T: TestModeRPC + Send + Sync + 'static,
@@ -135,8 +135,8 @@ impl Registry {
             mem_pool_config,
             backend_info,
             node_mode,
-            mem_pool_batch,
             server_config,
+            mem_pool,
         }
     }
 
@@ -149,7 +149,7 @@ impl Registry {
             .with_data(Data::new(self.rollup_config))
             .with_data(Data::new(self.mem_pool_config))
             .with_data(Data::new(self.backend_info))
-            .with_data(Data::new(self.mem_pool_batch))
+            .with_data(Data::new(self.mem_pool))
             .with_method("gw_ping", ping)
             .with_method("gw_get_tip_block_hash", get_tip_block_hash)
             .with_method("gw_get_block_hash", get_block_hash)
@@ -396,33 +396,28 @@ async fn get_tip_block_hash(store: Data<Store>) -> Result<JsonH256> {
 async fn get_transaction_receipt(
     Params((tx_hash,)): Params<(JsonH256,)>,
     store: Data<Store>,
+    mem_pool: Data<Option<MemPool>>,
 ) -> Result<Option<TxReceipt>> {
     let tx_hash = to_h256(tx_hash);
+    if let Some(receipt) = mem_pool
+        .as_ref()
+        .map(|pool| pool.get_transaction_receipt(&tx_hash))
+    {
+        return Ok(receipt.map(Into::into));
+    }
+
     let db = store.begin_transaction();
-    // search from db
-    if let Some(receipt) = db.get_transaction_receipt(&tx_hash)?.map(|receipt| {
-        let receipt: TxReceipt = receipt.into();
-        receipt
-    }) {
-        return Ok(Some(receipt));
-    }
-    // search from mem pool
-    match db.get_mem_pool_transaction_receipt(&tx_hash)? {
-        Some(receipt) => Ok(Some(receipt.into())),
-        None => Ok(None),
-    }
+    Ok(db.get_transaction_receipt(&tx_hash)?.map(Into::into))
 }
 
 async fn execute_l2transaction(
     Params((l2tx,)): Params<(JsonBytes,)>,
-    mem_pool_batch: Data<Option<MemPoolBatch>>,
+    mem_pool: Data<Option<MemPool>>,
     store: Data<Store>,
 ) -> Result<RunResult, RpcError> {
-    let mem_pool_batch = match &*mem_pool_batch {
-        Some(mem_pool_batch) => mem_pool_batch,
-        None => {
-            return Err(mem_pool_is_disabled_err());
-        }
+    let mem_pool = match &*mem_pool {
+        Some(mem_pool) => mem_pool,
+        None => return Err(mem_pool_is_disabled_err()),
     };
 
     let l2tx_bytes = l2tx.into_bytes();
@@ -442,7 +437,7 @@ async fn execute_l2transaction(
         .number(number.pack())
         .build();
 
-    let mut run_result = mem_pool_batch.unchecked_execute_transaction(&tx, &block_info)?;
+    let mut run_result = mem_pool.unchecked_execute_transaction(&tx, &block_info)?;
     if run_result.exit_code != 0 {
         let receipt = gw_types::offchain::ErrorTxReceipt {
             tx_hash: tx.hash().into(),
@@ -474,6 +469,7 @@ async fn execute_raw_l2transaction(
     mem_pool_config: Data<MemPoolConfig>,
     store: Data<Store>,
     generator: Data<Generator>,
+    mem_pool: Data<Option<MemPool>>,
 ) -> Result<RunResult, RpcError> {
     let (raw_l2tx, block_number_opt) = match params {
         ExecuteRawL2TransactionParams::Tip(p) => (p.0, None),
@@ -485,7 +481,6 @@ async fn execute_raw_l2transaction(
     let raw_l2tx = packed::RawL2Transaction::from_slice(&raw_l2tx_bytes)?;
 
     let db = store.begin_transaction();
-
     let block_info = match block_number_opt {
         Some(block_number) => {
             let block_hash = match db.get_block_hash_by_number(block_number)? {
@@ -506,14 +501,23 @@ async fn execute_raw_l2transaction(
                 .number(number.pack())
                 .build()
         }
-        None => db
-            .get_mem_pool_block_info()?
-            .expect("get mem pool block info"),
+        // FIXME: execute on tip block?
+        None => {
+            let mem_pool = match &*mem_pool {
+                Some(pool) => pool,
+                None => return Err(mem_pool_is_disabled_err()),
+            };
+            mem_pool.block_info().expect("mem pool block info")
+        }
     };
 
     let execute_l2tx_max_cycles = mem_pool_config.execute_l2tx_max_cycles;
     let tx_hash: H256 = raw_l2tx.hash().into();
     let block_number: u64 = block_info.number().unpack();
+
+    if block_number_opt.is_none() && mem_pool.is_none() {
+        return Err(mem_pool_is_disabled_err());
+    }
 
     // execute tx in task
     let task: smol::Task<Result<_>> = smol::spawn(async move {
@@ -534,7 +538,9 @@ async fn execute_raw_l2transaction(
                 )?
             }
             None => {
-                let state = db.mem_pool_state_tree()?;
+                // TODO: refactor
+                let mem_pool = mem_pool.as_ref().expect("already check exist above");
+                let state = mem_pool.state_tree(&db);
                 generator.unchecked_execute_transaction(
                     &chain_view,
                     &state,
@@ -569,13 +575,14 @@ async fn execute_raw_l2transaction(
 async fn submit_l2transaction(
     Params((l2tx,)): Params<(JsonBytes,)>,
     store: Data<Store>,
-    mem_pool_batch: Data<Option<MemPoolBatch>>,
+    mem_pool: Data<Option<MemPool>>,
 ) -> Result<JsonH256, RpcError> {
-    let mem_pool_batch = match &*mem_pool_batch {
-        Some(mem_pool_batch) => mem_pool_batch,
+    let mem_pool = match &*mem_pool {
+        Some(mem_pool) => mem_pool,
         None => return Err(mem_pool_is_disabled_err()),
     };
 
+    // FIXME: refactor nonce verification
     let l2tx_bytes = l2tx.into_bytes();
     let tx = packed::L2Transaction::from_slice(&l2tx_bytes)?;
     let tx_hash = to_jsonh256(tx.hash().into());
@@ -583,7 +590,7 @@ async fn submit_l2transaction(
     {
         // fetch mem-pool state
         let db = store.begin_transaction();
-        let tree = db.mem_pool_state_tree()?;
+        let tree = mem_pool.state_tree(&db);
         // sender_id
         let sender_id = tx.raw().from_id().unpack();
         let sender_nonce: u32 = tree.get_nonce(sender_id)?;
@@ -607,45 +614,22 @@ async fn submit_l2transaction(
         }
     }
 
-    match mem_pool_batch.try_push_transaction(tx) {
-        Ok(_) => Ok(tx_hash),
-        Err(BatchError::Shutdown) => Err(RpcError::Provided {
-            code: INTERNAL_ERROR_ERR_CODE,
-            message: "mem pool is unavailable due to batch shutdown",
-        }),
-        Err(BatchError::ExceededMaxLimit) => Err(RpcError::Provided {
-            code: MEMPOOL_IS_FULL_ERR_CODE,
-            message: "mem pool is full",
-        }),
-        Err(BatchError::Push(err)) => Err(err.into()),
-    }
+    mem_pool.try_push_transaction(tx)?;
+    Ok(tx_hash)
 }
 
 async fn submit_withdrawal_request(
     Params((withdrawal_request,)): Params<(JsonBytes,)>,
-    mem_pool_batch: Data<Option<MemPoolBatch>>,
+    mem_pool: Data<Option<MemPool>>,
 ) -> Result<(), RpcError> {
-    let mem_pool_batch = match &*mem_pool_batch {
-        Some(mem_pool_batch) => mem_pool_batch,
-        None => {
-            return Err(mem_pool_is_disabled_err());
-        }
+    let mem_pool = match &*mem_pool {
+        Some(mem_pool) => mem_pool,
+        None => return Err(mem_pool_is_disabled_err()),
     };
     let withdrawal_bytes = withdrawal_request.into_bytes();
     let withdrawal = packed::WithdrawalRequest::from_slice(&withdrawal_bytes)?;
 
-    match mem_pool_batch.try_push_withdrawal_request(withdrawal) {
-        Ok(_) => Ok(()),
-        Err(BatchError::Shutdown) => Err(RpcError::Provided {
-            code: INTERNAL_ERROR_ERR_CODE,
-            message: "mem pool is unavailable due to batch shutdown",
-        }),
-        Err(BatchError::ExceededMaxLimit) => Err(RpcError::Provided {
-            code: MEMPOOL_IS_FULL_ERR_CODE,
-            message: "mem pool is full",
-        }),
-        Err(BatchError::Push(err)) => Err(err.into()),
-    }
+    Ok(mem_pool.try_push_withdrawal(withdrawal)?)
 }
 
 // short_address, sudt_id, block_number
@@ -659,6 +643,7 @@ enum GetBalanceParams {
 async fn get_balance(
     Params(params): Params<GetBalanceParams>,
     store: Data<Store>,
+    mem_pool: Data<Option<MemPool>>,
 ) -> Result<Uint128, RpcError> {
     let (short_address, sudt_id, block_number) = match params {
         GetBalanceParams::Tip(p) => (p.0, p.1, None),
@@ -672,7 +657,10 @@ async fn get_balance(
             tree.get_sudt_balance(sudt_id.into(), short_address.as_bytes())?
         }
         None => {
-            let tree = db.mem_pool_state_tree()?;
+            let tree = match &*mem_pool {
+                Some(mem_pool) => mem_pool.state_tree(&db),
+                None => return Err(mem_pool_is_disabled_err()),
+            };
             tree.get_sudt_balance(sudt_id.into(), short_address.as_bytes())?
         }
     };
@@ -690,6 +678,7 @@ enum GetStorageAtParams {
 async fn get_storage_at(
     Params(params): Params<GetStorageAtParams>,
     store: Data<Store>,
+    mem_pool: Data<Option<MemPool>>,
 ) -> Result<JsonH256, RpcError> {
     let (account_id, key, block_number) = match params {
         GetStorageAtParams::Tip(p) => (p.0, p.1, None),
@@ -704,7 +693,10 @@ async fn get_storage_at(
             tree.get_value(account_id.into(), &key)?
         }
         None => {
-            let tree = db.mem_pool_state_tree()?;
+            let tree = match &*mem_pool {
+                Some(mem_pool) => mem_pool.state_tree(&db),
+                None => return Err(mem_pool_is_disabled_err()),
+            };
             let key: H256 = to_h256(key);
             tree.get_value(account_id.into(), &key)?
         }
@@ -716,13 +708,21 @@ async fn get_storage_at(
 
 async fn get_account_id_by_script_hash(
     Params((script_hash,)): Params<(JsonH256,)>,
+    mem_pool: Data<Option<MemPool>>,
     store: Data<Store>,
 ) -> Result<Option<AccountID>, RpcError> {
-    let db = store.begin_transaction();
-    let tree = db.mem_pool_state_tree()?;
-
     let script_hash = to_h256(script_hash);
 
+    let db = store.begin_transaction();
+    if let Some(tree) = mem_pool.as_ref().map(|pool| pool.state_tree(&db)) {
+        let opt_id = tree
+            .get_account_id_by_script_hash(&script_hash)?
+            .map(Into::into);
+
+        return Ok(opt_id);
+    }
+
+    let tree = db.state_tree(StateContext::ReadOnly)?;
     let account_id_opt = tree
         .get_account_id_by_script_hash(&script_hash)?
         .map(Into::into);
@@ -740,6 +740,7 @@ enum GetNonceParams {
 
 async fn get_nonce(
     Params(params): Params<GetNonceParams>,
+    mem_pool: Data<Option<MemPool>>,
     store: Data<Store>,
 ) -> Result<Uint32, RpcError> {
     let (account_id, block_number) = match params {
@@ -754,7 +755,10 @@ async fn get_nonce(
             tree.get_nonce(account_id.into())?
         }
         None => {
-            let tree = db.mem_pool_state_tree()?;
+            let tree = match &*mem_pool {
+                Some(mem_pool) => mem_pool.state_tree(&db),
+                None => return Err(mem_pool_is_disabled_err()),
+            };
             tree.get_nonce(account_id.into())?
         }
     };
@@ -764,12 +768,17 @@ async fn get_nonce(
 
 async fn get_script(
     Params((script_hash,)): Params<(JsonH256,)>,
+    mem_pool: Data<Option<MemPool>>,
     store: Data<Store>,
 ) -> Result<Option<Script>, RpcError> {
-    let db = store.begin_transaction();
-    let tree = db.mem_pool_state_tree()?;
-
     let script_hash = to_h256(script_hash);
+
+    let db = store.begin_transaction();
+    if let Some(tree) = mem_pool.as_ref().map(|pool| pool.state_tree(&db)) {
+        return Ok(tree.get_script(&script_hash).map(Into::into));
+    }
+
+    let tree = db.state_tree(StateContext::ReadOnly)?;
     let script_opt = tree.get_script(&script_hash).map(Into::into);
 
     Ok(script_opt)
@@ -777,22 +786,38 @@ async fn get_script(
 
 async fn get_script_hash(
     Params((account_id,)): Params<(AccountID,)>,
+    mem_pool: Data<Option<MemPool>>,
     store: Data<Store>,
 ) -> Result<JsonH256, RpcError> {
     let db = store.begin_transaction();
-    let tree = db.mem_pool_state_tree()?;
+    if let Some(tree) = mem_pool.as_ref().map(|pool| pool.state_tree(&db)) {
+        return Ok(tree.get_script_hash(account_id.into()).map(to_jsonh256)?);
+    }
 
-    let script_hash = tree.get_script_hash(account_id.into())?;
-    Ok(to_jsonh256(script_hash))
+    let tree = db.state_tree(StateContext::ReadOnly)?;
+    let script_hash = tree.get_script_hash(account_id.into()).map(to_jsonh256)?;
+
+    Ok(script_hash)
 }
 
 async fn get_script_hash_by_short_address(
     Params((short_address,)): Params<(JsonBytes,)>,
+    mem_pool: Data<Option<MemPool>>,
     store: Data<Store>,
 ) -> Result<Option<JsonH256>, RpcError> {
+    let short_address = short_address.into_bytes();
+
     let db = store.begin_transaction();
-    let tree = db.mem_pool_state_tree()?;
-    let script_hash_opt = tree.get_script_hash_by_short_address(&short_address.into_bytes());
+    if let Some(tree) = mem_pool.as_ref().map(|pool| pool.state_tree(&db)) {
+        let opt_hash = tree
+            .get_script_hash_by_short_address(&short_address)
+            .map(to_jsonh256);
+        return Ok(opt_hash);
+    }
+
+    let tree = db.state_tree(StateContext::ReadOnly)?;
+    let script_hash_opt = tree.get_script_hash_by_short_address(&short_address);
+
     Ok(script_hash_opt.map(to_jsonh256))
 }
 
@@ -806,21 +831,31 @@ enum GetDataParams {
 
 async fn get_data(
     Params(params): Params<GetDataParams>,
+    mem_pool: Data<Option<MemPool>>,
     store: Data<Store>,
 ) -> Result<Option<JsonBytes>, RpcError> {
-    let (data_hash, _block_number) = match params {
+    let (data_hash, block_number) = match params {
         GetDataParams::Tip(p) => (p.0, None),
         GetDataParams::Number(p) => p,
     };
 
     let db = store.begin_transaction();
-    let tree = db.mem_pool_state_tree()?;
+    let data_hash = to_h256(data_hash);
+    let opt_data = match block_number {
+        Some(block_number) => {
+            let tree = db.state_tree(StateContext::ReadOnlyHistory(block_number.into()))?;
+            tree.get_data(&data_hash)
+        }
+        None => {
+            let tree: Box<dyn CodeStore> = match &*mem_pool {
+                Some(mem_pool) => Box::new(mem_pool.state_tree(&db)),
+                None => Box::new(db.state_tree(StateContext::ReadOnly)?),
+            };
+            tree.get_data(&data_hash)
+        }
+    };
 
-    let data_opt = tree
-        .get_data(&to_h256(data_hash))
-        .map(JsonBytes::from_bytes);
-
-    Ok(data_opt)
+    Ok(opt_data.map(JsonBytes::from_bytes))
 }
 
 async fn compute_l2_sudt_script_hash(
