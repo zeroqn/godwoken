@@ -2251,6 +2251,7 @@ name = "gw-store"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dashmap",
  "gw-common",
  "gw-config",
  "gw-db",
