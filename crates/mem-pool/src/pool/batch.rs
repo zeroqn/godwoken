@@ -7,7 +7,6 @@ use std::{
 };
 
 use anyhow::{bail, Result};
-use gw_challenge::offchain::OffChainCancelChallengeValidator;
 use gw_common::{
     builtins::CKB_SUDT_ACCOUNT_ID,
     state::{to_short_address, State},
@@ -30,7 +29,7 @@ use crate::{
     types::EntryList,
 };
 
-use super::{deposit, offchain_validator::OffchainValidator, tx, withdrawal, MemPoolStore};
+use super::{deposit, tx, withdrawal, MemPoolStore};
 
 #[derive(thiserror::Error, Debug)]
 pub enum BatchError {
@@ -61,7 +60,6 @@ pub struct Batch<P: MemPoolProvider, H: MemPoolErrorTxHandler> {
     provider: Arc<RwLock<P>>,
     current_tip: (H256, u64),
     block_producer_id: u32,
-    opt_offchain_validator: Option<OffChainCancelChallengeValidator>,
     opt_error_tx_handler: Option<H>,
     pending: HashMap<u32, EntryList>,
     batched: Batched,
@@ -76,7 +74,6 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         provider: Arc<RwLock<P>>,
         current_tip: (H256, u64),
         block_producer_id: u32,
-        opt_offchain_validator: Option<OffChainCancelChallengeValidator>,
         opt_error_tx_handler: Option<H>,
         config: MemPoolConfig,
     ) -> BatchHandle {
@@ -89,7 +86,6 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
             provider,
             current_tip,
             block_producer_id,
-            opt_offchain_validator,
             opt_error_tx_handler,
             pending: HashMap::new(),
             batched: Default::default(),
@@ -344,22 +340,10 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         self.store.mem().update_account_state(&merkle_state);
         self.store.mem().reset();
 
-        let db = self.store.db().begin_transaction();
-        if let Some(offchain_validator) = self.opt_offchain_validator.as_mut() {
-            let reverted_block_root: H256 = {
-                let smt = db.reverted_block_smt()?;
-                smt.root().to_owned()
-            };
-
-            offchain_validator.reset(
-                &new_tip_block,
-                estimated_timestamp.as_millis() as u64,
-                reverted_block_root,
-            );
-        }
-
         // set tip
         self.current_tip = (new_tip, new_tip_block.raw().number().unpack());
+
+        let db = self.store.db().begin_transaction();
 
         // batched withdrawals
         let batched_withdrawals: Vec<_> = {
@@ -514,12 +498,6 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
             withdrawals.clone(),
         )?;
 
-        let mem_store = db.mem_pool_account_smt(self.store.owned_mem());
-        let opt_offchain_validator = self
-            .opt_offchain_validator
-            .as_mut()
-            .map(|v| OffchainValidator::new(v, &db, mem_store));
-
         let mut state = db.mem_pool_state_tree(self.store.owned_mem());
         let batched = withdrawal::finalize(
             &withdrawals,
@@ -527,7 +505,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
             self.block_producer_id,
             &finalized_custodians,
             &self.generator,
-            opt_offchain_validator,
+            None,
         )?;
 
         let batched_set: HashSet<H256> = HashSet::from_iter(batched);
@@ -584,10 +562,6 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         }
 
         let mem_store = db.mem_pool_account_smt(self.store.owned_mem());
-        let opt_offchain_validator = self
-            .opt_offchain_validator
-            .as_mut()
-            .map(|v| OffchainValidator::new(v, &db, mem_store));
         let opt_error_tx_handler = self.opt_error_tx_handler.as_mut();
 
         tx::verify(&tx, state, &self.generator)?;
@@ -598,19 +572,13 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
             block_info,
             &self.generator,
             self.config.execute_l2tx_max_cycles,
-            opt_offchain_validator,
+            None,
             opt_error_tx_handler,
         )
     }
 
     fn batch_txs(&mut self, txs: Vec<L2Transaction>, db: &StoreTransaction) -> Result<Vec<H256>> {
         let mut state = db.mem_pool_state_tree(self.store.owned_mem());
-        let mem_store = db.mem_pool_account_smt(self.store.owned_mem());
-        let opt_offchain_validator = self
-            .opt_offchain_validator
-            .as_mut()
-            .map(|v| OffchainValidator::new(v, &db, mem_store));
-        let opt_error_tx_handler = self.opt_error_tx_handler.as_mut();
 
         let tip_block_hash = db.get_tip_block_hash()?;
         let chain_view = ChainView::new(&db, tip_block_hash);
