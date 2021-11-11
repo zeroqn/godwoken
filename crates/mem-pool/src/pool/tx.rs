@@ -6,7 +6,7 @@ use gw_generator::{error::TransactionError, traits::StateExt, Generator};
 use gw_store::chain_view::ChainView;
 use gw_traits::CodeStore;
 use gw_types::{
-    offchain::ErrorTxReceipt,
+    offchain::{ErrorTxReceipt, RunResult},
     packed::{BlockInfo, L2Transaction, TxReceipt},
     prelude::{Entity, Unpack},
 };
@@ -42,7 +42,7 @@ pub fn finalize(
     max_l2_cycles: u64,
     opt_offchain_validator: Option<OffchainValidator<'_>>,
     opt_error_tx_handler: Option<&mut impl MemPoolErrorTxHandler>,
-) -> Result<TxReceipt> {
+) -> Result<RunResult> {
     // execute tx
     let raw_tx = tx.raw();
     let t = Instant::now();
@@ -97,14 +97,5 @@ pub fn finalize(
         t.elapsed().as_millis()
     );
 
-    // generate tx receipt
-    let t = Instant::now();
-    let tx_receipt =
-        TxReceipt::build_receipt(tx.witness_hash().into(), run_result, Default::default());
-    log::debug!(
-        "[finalize tx] generate receipt: {}ms",
-        t.elapsed().as_millis()
-    );
-
-    Ok(tx_receipt)
+    Ok(run_result)
 }

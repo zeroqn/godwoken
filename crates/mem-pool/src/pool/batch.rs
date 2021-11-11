@@ -17,7 +17,7 @@ use gw_generator::{traits::StateExt, Generator};
 use gw_store::{chain_view::ChainView, transaction::StoreTransaction};
 use gw_traits::CodeStore;
 use gw_types::{
-    offchain::{CollectedCustodianCells, DepositInfo},
+    offchain::{CollectedCustodianCells, DepositInfo, RunResult},
     packed::{BlockInfo, L2Transaction, OutPoint, TxReceipt, WithdrawalRequest},
     prelude::{Builder, Entity, Pack, Unpack},
 };
@@ -235,10 +235,14 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         let mem = self.store.mem();
         let block_info = mem.get_block_info().expect("batch block info");
 
-        let receipt = self.batch_one_tx(&tx, db, &mut state, &chain_view, &block_info)?;
+        let run_result = self.batch_one_tx(&tx, db, &mut state, &chain_view, &block_info)?;
         let tx_hash: H256 = tx.hash().into();
         db.insert_mem_pool_transaction(&tx_hash, tx)?;
+
+        let receipt =
+            TxReceipt::build_receipt(tx.witness_hash().into(), run_result, Default::default());
         self.store.mem().insert_tx_receipt(tx_hash, receipt);
+        self.store.mem().insert_run_result(tx_hash, run_result);
         self.batched.txs.push(tx_hash);
         self.batched.txs_set.insert(tx_hash);
 
@@ -549,7 +553,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         state: &mut (impl State + StateExt + CodeStore),
         chain_view: &ChainView,
         block_info: &BlockInfo,
-    ) -> Result<TxReceipt> {
+    ) -> Result<RunResult> {
         let tx_hash: H256 = tx.hash().into();
         if self.batched.txs_set.contains(&tx_hash) {
             bail!("duplicate tx");
@@ -589,9 +593,15 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         for tx in txs {
             let tx_hash: H256 = tx.hash().into();
             match self.batch_one_tx(&tx, db, &mut state, &chain_view, &block_info) {
-                Ok(receipt) => {
+                Ok(run_result) => {
                     db.insert_mem_pool_transaction(&tx_hash, tx)?;
+                    let receipt = TxReceipt::build_receipt(
+                        tx.witness_hash().into(),
+                        run_result,
+                        Default::default(),
+                    );
                     self.store.mem().insert_tx_receipt(tx_hash, receipt);
+                    self.store.mem().insert_run_result(tx_hash, run_result);
                     batched.push(tx_hash);
                 }
                 Err(err) => {

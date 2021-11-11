@@ -56,6 +56,7 @@ use crate::{
 
 mod batch;
 mod deposit;
+mod finalize;
 mod offchain_validator;
 mod tx;
 mod withdrawal;

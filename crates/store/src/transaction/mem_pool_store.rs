@@ -14,7 +14,7 @@ use gw_db::{
 };
 use gw_types::{
     bytes::Bytes,
-    offchain::DepositInfo,
+    offchain::{DepositInfo, RunResult},
     packed::{self, AccountMerkleState},
     prelude::*,
 };
@@ -42,8 +42,9 @@ pub struct MultiMemStore {
     scripts: DashMap<H256, packed::Script>,
     data: DashMap<H256, Bytes>,
     scripts_hash_prefix: DashMap<Bytes, H256>,
-    tx_receipts: DashMap<H256, packed::TxReceipt>,
     deposits: DashMap<packed::OutPoint, DepositInfo>,
+    tx_receipts: DashMap<H256, packed::TxReceipt>,
+    run_result: DashMap<H256, RunResult>,
 }
 
 impl MultiMemStore {
@@ -58,8 +59,9 @@ impl MultiMemStore {
             scripts: DashMap::new(),
             data: DashMap::new(),
             scripts_hash_prefix: DashMap::new(),
-            tx_receipts: DashMap::new(),
             deposits: DashMap::new(),
+            tx_receipts: DashMap::new(),
+            run_result: DashMap::new(),
         }
     }
 
@@ -143,6 +145,14 @@ impl MultiMemStore {
 
     pub fn insert_tx_receipt(&self, tx_hash: H256, receipt: packed::TxReceipt) {
         self.tx_receipts.insert(tx_hash, receipt);
+    }
+
+    pub fn get_run_result(&self, tx_hash: &H256) -> Option<RunResult> {
+        self.run_result.get(tx_hash).map(|r| r.to_owned())
+    }
+
+    pub fn insert_run_result(&self, tx_hash: H256, run_result: RunResult) {
+        self.run_result.insert(tx_hash, run_result);
     }
 
     pub fn get_deposit(&self, out_point: &packed::OutPoint) -> Option<DepositInfo> {
