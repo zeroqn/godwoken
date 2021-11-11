@@ -18,6 +18,6 @@ pub trait MemPoolProvider: Sync + Send {
     ) -> Task<Result<CollectedCustodianCells>>;
 }
 
-pub trait MemPoolErrorTxHandler {
+pub trait MemPoolErrorTxHandler: Send {
     fn handle_error_receipt(&mut self, receipt: ErrorTxReceipt) -> Task<Result<()>>;
 }

@@ -4,13 +4,8 @@ use crate::{
 };
 
 use anyhow::{anyhow, bail, Result};
-use gw_challenge::offchain::OffChainCancelChallengeValidator;
 use gw_common::{state::State, H256};
 use gw_generator::{traits::StateExt, Generator};
-use gw_store::{
-    smt::mem_pool_smt_store::MemPoolSMTStore, state::mem_state_db::MemStateContext,
-    transaction::StoreTransaction,
-};
 use gw_traits::CodeStore;
 use gw_types::{
     offchain::CollectedCustodianCells,
@@ -18,7 +13,9 @@ use gw_types::{
     prelude::{Entity, Unpack},
 };
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+
+use super::offchain_validator::OffchainValidator;
 
 // FIXME: remove Vec
 pub fn query_finalized_custodians(
@@ -41,19 +38,14 @@ pub fn query_finalized_custodians(
 
 pub fn verify(
     request: &WithdrawalRequest,
-    db: &StoreTransaction,
+    asset_script: Option<Script>,
     state: &(impl State + CodeStore),
     finalized_custodians: &CollectedCustodianCells,
     generator: &Generator,
-    exclusion: &HashSet<H256>,
 ) -> Result<()> {
     // check withdrawal size
     if request.as_slice().len() > MAX_WITHDRAWAL_SIZE {
         bail!("withdrawal over size");
-    }
-
-    if exclusion.contains(&request.hash().into()) {
-        bail!("duplicate withdrawal request");
     }
 
     // verify withdrawal signature
@@ -66,37 +58,9 @@ pub fn verify(
     withdrawal_generator.verify_remained_amount(request)?;
 
     // withdrawal basic verification
-    let asset_script = db.get_asset_script(&request.raw().sudt_script_hash().unpack())?;
     generator.verify_withdrawal_request(state, request, asset_script)?;
 
     Ok(())
-}
-
-pub struct OffchainValidator<'a> {
-    validator: &'a mut OffChainCancelChallengeValidator,
-    db: &'a StoreTransaction,
-    mem_pool_store: MemPoolSMTStore<'a>,
-}
-
-impl<'a> OffchainValidator<'a> {
-    pub fn new(
-        validator: &'a mut OffChainCancelChallengeValidator,
-        db: &'a StoreTransaction,
-        mem_pool_store: MemPoolSMTStore<'a>,
-    ) -> Self {
-        Self {
-            validator,
-            db,
-            mem_pool_store,
-        }
-    }
-
-    pub fn verify(&mut self, request: WithdrawalRequest) -> Result<Option<u64>> {
-        let db = self.db;
-        let mut mem_tree = db.in_mem_state_tree(self.mem_pool_store, MemStateContext::Tip)?;
-        self.validator
-            .verify_withdrawal_request(db, &mut mem_tree, request)
-    }
 }
 
 // WARNING: must no have duplicate withdrawals
@@ -106,7 +70,7 @@ pub fn finalize(
     block_producer_id: u32,
     finalized_custodians: &CollectedCustodianCells,
     generator: &Generator,
-    offchain_validator: Option<OffchainValidator<'_>>,
+    opt_offchain_validator: Option<OffchainValidator<'_>>,
 ) -> Result<Vec<H256>> {
     let available_custodians = AvailableCustodians::from(finalized_custodians);
     let asset_scripts: HashMap<H256, Script> = {
@@ -166,8 +130,8 @@ pub fn finalize(
             continue;
         }
 
-        if let Some(validator) = offchain_validator {
-            match validator.verify(withdrawal.clone()) {
+        if let Some(validator) = opt_offchain_validator {
+            match validator.verify_withdrawal(withdrawal.clone()) {
                 Ok(cycles) => log::debug!("[mem-pool] offchain withdrawal cycles {:?}", cycles),
                 Err(err) => {
                     log::info!(

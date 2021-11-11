@@ -14,6 +14,7 @@ use gw_db::{
 };
 use gw_types::{
     bytes::Bytes,
+    offchain::DepositInfo,
     packed::{self, AccountMerkleState},
     prelude::*,
 };
@@ -42,6 +43,7 @@ pub struct MultiMemStore {
     data: DashMap<H256, Bytes>,
     scripts_hash_prefix: DashMap<Bytes, H256>,
     tx_receipts: DashMap<H256, packed::TxReceipt>,
+    deposits: DashMap<packed::OutPoint, DepositInfo>,
 }
 
 impl MultiMemStore {
@@ -57,6 +59,7 @@ impl MultiMemStore {
             data: DashMap::new(),
             scripts_hash_prefix: DashMap::new(),
             tx_receipts: DashMap::new(),
+            deposits: DashMap::new(),
         }
     }
 
@@ -140,6 +143,14 @@ impl MultiMemStore {
 
     pub fn insert_tx_receipt(&self, tx_hash: H256, receipt: packed::TxReceipt) {
         self.tx_receipts.insert(tx_hash, receipt);
+    }
+
+    pub fn get_deposit(&self, out_point: &packed::OutPoint) -> Option<DepositInfo> {
+        self.deposits.get(out_point).map(|d| d.to_owned())
+    }
+
+    pub fn insert_deposit(&self, out_point: packed::OutPoint, deposit: DepositInfo) {
+        self.deposits.insert(out_point, deposit);
     }
 }
 

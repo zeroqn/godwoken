@@ -56,6 +56,8 @@ use crate::{
 
 mod batch;
 mod deposit;
+mod offchain_validator;
+mod tx;
 mod withdrawal;
 
 #[derive(Debug)]
@@ -84,6 +86,10 @@ struct MemPoolStore {
 impl MemPoolStore {
     fn mem(&self) -> &MultiMemStore {
         &self.mem
+    }
+
+    fn owned_mem(&self) -> Arc<MultiMemStore> {
+        Arc::clone(&self.mem)
     }
 
     fn db(&self) -> &Store {
