@@ -55,6 +55,7 @@ use crate::{
 };
 
 mod batch;
+mod deposit;
 mod withdrawal;
 
 #[derive(Debug)]
