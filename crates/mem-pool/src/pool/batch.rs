@@ -128,34 +128,47 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
             }
 
             let batch_size = batch.len();
-
             {
                 let total_batch_time = Instant::now();
                 let db = self.store.db().begin_transaction();
                 for req in batch.drain(..) {
-                    let req_hash = req.hash();
-                    let req_kind = req.kind();
-
-                    if let Err(err) = match req {
-                        BatchRequest::Transaction(tx) => {
-                            let t = Instant::now();
-                            let ret = self.push_transaction(tx, &db);
-                            if ret.is_ok() {
-                                log::info!(
-                                    "[mem-pool batch] push tx total time {}ms",
-                                    t.elapsed().as_millis()
-                                );
+                    match req {
+                        BatchRequest::Reset { old_tip, new_tip } => {
+                            let now = Instant::now();
+                            if let Err(err) = self.reset(old_tip, new_tip) {
+                                log::error!("[mem-pool batch] fail to reset, error {}", err);
                             }
-                            ret
+                            log::info!(
+                                "[mem-pool batch] reset time: {}ms",
+                                now.elapsed().as_millis(),
+                            );
                         }
-                        BatchRequest::Withdrawal(w) => self.push_withdrawal(w, &db),
-                    } {
-                        log::info!(
-                            "[mem-pool batch] fail to push {} {:?} into mem-pool, err: {}",
-                            req_kind,
-                            faster_hex::hex_string(&req_hash),
-                            err
-                        )
+                        BatchRequest::TxWithdrawal(req) => {
+                            let req_hash = req.hash();
+                            let req_kind = req.kind();
+
+                            if let Err(err) = match req {
+                                TxWithdrawal::Transaction(tx) => {
+                                    let t = Instant::now();
+                                    let ret = self.push_transaction(tx, &db);
+                                    if ret.is_ok() {
+                                        log::info!(
+                                            "[mem-pool batch] push tx total time {}ms",
+                                            t.elapsed().as_millis()
+                                        );
+                                    }
+                                    ret
+                                }
+                                TxWithdrawal::Withdrawal(w) => self.push_withdrawal(w, &db),
+                            } {
+                                log::info!(
+                                    "[mem-pool batch] fail to push {} {:?} into mem-pool, err: {}",
+                                    req_kind,
+                                    faster_hex::hex_string(&req_hash),
+                                    err
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -650,22 +663,30 @@ impl Default for Batched {
 }
 
 enum BatchRequest {
+    TxWithdrawal(TxWithdrawal),
+    Reset {
+        old_tip: Option<H256>,
+        new_tip: Option<H256>,
+    },
+}
+
+enum TxWithdrawal {
     Transaction(L2Transaction),
     Withdrawal(WithdrawalRequest),
 }
 
-impl BatchRequest {
+impl TxWithdrawal {
     fn hash(&self) -> [u8; 32] {
         match self {
-            BatchRequest::Transaction(ref tx) => tx.hash(),
-            BatchRequest::Withdrawal(ref w) => w.hash(),
+            TxWithdrawal::Transaction(ref tx) => tx.hash(),
+            TxWithdrawal::Withdrawal(ref w) => w.hash(),
         }
     }
 
     fn kind(&self) -> &'static str {
         match self {
-            BatchRequest::Transaction(_) => "tx",
-            BatchRequest::Withdrawal(_) => "withdrawal",
+            TxWithdrawal::Transaction(_) => "tx",
+            TxWithdrawal::Withdrawal(_) => "withdrawal",
         }
     }
 }
