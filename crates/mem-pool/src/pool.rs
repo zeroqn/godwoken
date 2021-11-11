@@ -28,7 +28,7 @@ use gw_generator::{
 use gw_store::{
     chain_view::ChainView,
     state::{mem_state_db::MemStateContext, state_db::StateContext},
-    transaction::StoreTransaction,
+    transaction::{mem_pool_store::MultiMemStore, StoreTransaction},
     Store,
 };
 use gw_types::{
@@ -54,10 +54,8 @@ use crate::{
     withdrawal::Generator as WithdrawalGenerator,
 };
 
-pub enum MemBlockDBMode {
-    NewBlock,
-    Package,
-}
+mod batch;
+mod withdrawal;
 
 #[derive(Debug)]
 pub struct OutputParam {
@@ -76,9 +74,27 @@ impl Default for OutputParam {
     }
 }
 
+#[derive(Clone)]
+struct MemPoolStore {
+    mem: Arc<MultiMemStore>,
+    db: Store,
+}
+
+impl MemPoolStore {
+    fn mem(&self) -> &MultiMemStore {
+        &self.mem
+    }
+
+    fn db(&self) -> &Store {
+        &self.db
+    }
+}
+
 /// Shared mem pool logic
 #[derive(Clone)]
 pub struct Inner {
+    /// mem store
+    mem_store: Arc<MultiMemStore>,
     /// store
     store: Store,
     /// current tip
@@ -93,6 +109,7 @@ pub struct Inner {
 
 impl Inner {
     pub fn new(
+        mem_store: Arc<MultiMemStore>,
         store: Store,
         tip: (H256, u64),
         generator: Arc<Generator>,
@@ -103,6 +120,7 @@ impl Inner {
         let provider = Arc::new(ArcSwap::new(Arc::new(provider)));
 
         Inner {
+            mem_store,
             store,
             current_tip,
             generator,
@@ -113,6 +131,10 @@ impl Inner {
 
     pub fn config(&self) -> &MemPoolConfig {
         &self.config
+    }
+
+    pub fn mem_store(&self) -> &MultiMemStore {
+        &self.mem_store
     }
 
     pub fn store(&self) -> &Store {
@@ -142,7 +164,7 @@ impl Inner {
         block_info: &BlockInfo,
     ) -> Result<RunResult> {
         let db = self.store.begin_transaction();
-        let state = db.mem_pool_state_tree()?;
+        let state = db.mem_pool_state_tree(Arc::clone(&self.mem_store));
         let tip_block_hash = self.store.get_tip_block_hash()?;
         let chain_view = ChainView::new(&db, tip_block_hash);
         // verify tx signature
@@ -170,7 +192,7 @@ impl Inner {
         }
 
         let db = self.store.begin_transaction();
-        let state = db.mem_pool_state_tree()?;
+        let state = db.mem_pool_state_tree(Arc::clone(&self.mem_store));
         // verify withdrawal signature
         self.generator
             .check_withdrawal_request_signature(&state, withdrawal_request)?;
@@ -236,7 +258,9 @@ impl MemPool {
         let tip = (tip_block.hash().into(), tip_block.raw().number().unpack());
 
         let config = Arc::new(config);
+        let mem_store = Arc::new(MultiMemStore::new(&tip_block.raw().post_account()));
         let inner = Inner::new(
+            mem_store,
             store.clone(),
             tip,
             Arc::clone(&generator),
@@ -277,6 +301,14 @@ impl MemPool {
 
     pub fn mem_block(&self) -> &MemBlock {
         &self.mem_block
+    }
+
+    pub fn mem_store(&self) -> &MultiMemStore {
+        &self.inner.mem_store
+    }
+
+    pub fn owned_mem_store(&self) -> Arc<MultiMemStore> {
+        Arc::clone(&self.inner.mem_store)
     }
 
     pub fn current_tip(&self) -> (H256, u64) {
@@ -334,7 +366,7 @@ impl MemPool {
 
         // save tx receipt in mem pool
         self.mem_block.push_tx(tx_hash, &tx_receipt);
-        db.insert_mem_pool_transaction_receipt(&tx_hash, tx_receipt)?;
+        self.mem_store().insert_tx_receipt(tx_hash, tx_receipt);
 
         // Add to pool
         let account_id: u32 = tx.raw().from_id().unpack();
@@ -352,7 +384,7 @@ impl MemPool {
             return Err(anyhow!("tx over size"));
         }
 
-        let state = db.mem_pool_state_tree()?;
+        let state = db.mem_pool_state_tree(self.owned_mem_store());
         // verify transaction
         self.generator.verify_transaction(&state, tx)?;
         // verify signature
@@ -392,7 +424,7 @@ impl MemPool {
         // Check replace-by-fee
         // TODO
 
-        let state = db.mem_pool_state_tree()?;
+        let state = db.mem_pool_state_tree(self.owned_mem_store());
         let account_script_hash: H256 = withdrawal.raw().account_script_hash().unpack();
         let account_id = state
             .get_account_id_by_script_hash(&account_script_hash)?
@@ -401,6 +433,7 @@ impl MemPool {
         entry_list.withdrawals.push(withdrawal.clone());
         // Add to pool
         db.insert_mem_pool_withdrawal(&withdrawal_hash, withdrawal)?;
+
         Ok(())
     }
 
@@ -1113,7 +1146,7 @@ impl MemPool {
     /// Execute tx & update local state
     fn finalize_tx(&mut self, db: &StoreTransaction, tx: L2Transaction) -> Result<TxReceipt> {
         let t = Instant::now();
-        let mut state = db.mem_pool_state_tree()?;
+        let mut state = db.mem_pool_state_tree(self.owned_mem_store());
         let tip_block_hash = db.get_tip_block_hash()?;
         let chain_view = ChainView::new(db, tip_block_hash);
         let block_info = self.mem_block.block_info();
@@ -1138,7 +1171,7 @@ impl MemPool {
         );
 
         if let Some(ref mut offchain_validator) = self.offchain_validator {
-            let mem_pool_smt_store = db.mem_pool_account_smt()?;
+            let mem_pool_smt_store = db.mem_pool_account_smt(self.owned_mem_store());
             let mut mem_tree = db.in_mem_state_tree(mem_pool_smt_store, MemStateContext::Tip)?;
             let maybe_cycles =
                 offchain_validator.verify_transaction(db, &mut mem_tree, tx.clone(), &run_result);
@@ -1179,18 +1212,10 @@ impl MemPool {
             t.elapsed().as_millis()
         );
 
-        let t = Instant::now();
-        state.submit_tree_to_mem_block()?;
-        log::debug!(
-            "[finalize tx] submit tree to mem_block: {}ms",
-            t.elapsed().as_millis()
-        );
-
         // generate tx receipt
         let t = Instant::now();
-        let merkle_state = state.merkle_state()?;
         let tx_receipt =
-            TxReceipt::build_receipt(tx.witness_hash().into(), run_result, merkle_state);
+            TxReceipt::build_receipt(tx.witness_hash().into(), run_result, Default::default());
         log::debug!(
             "[finalize tx] generate receipt: {}ms",
             t.elapsed().as_millis()
