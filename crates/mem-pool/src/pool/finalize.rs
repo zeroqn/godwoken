@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{future::Future, time::Instant};
 
 use anyhow::{anyhow, Context, Result};
 use gw_common::{merkle_utils::calculate_state_checkpoint, smt::SMT, state::State, H256};
@@ -23,17 +23,17 @@ use crate::mem_block::MemBlock;
 use super::{MemPoolStore, OutputParam};
 
 pub struct FinalizeWithdrawals {
-    withdrawal_hashes: Vec<H256>,
-    finalized_custodians: CollectedCustodianCells,
+    pub withdrawal_hashes: Vec<H256>,
+    pub finalized_custodians: CollectedCustodianCells,
 }
 
 pub struct FinalizeNewTip {
-    block_hash: H256,
-    block_number: u64,
-    block_info: BlockInfo,
-    withdrawals: Option<FinalizeWithdrawals>,
-    deposits: Option<Vec<OutPoint>>,
-    txs: Option<Vec<H256>>,
+    pub block_hash: H256,
+    pub block_number: u64,
+    pub block_info: BlockInfo,
+    pub withdrawals: Option<FinalizeWithdrawals>,
+    pub deposits: Option<Vec<OutPoint>>,
+    pub txs: Option<Vec<H256>>,
 }
 
 pub enum FinalizeMessage {
@@ -67,6 +67,38 @@ pub struct Finalize {
 
 pub struct FinalizeHandle {
     finalize_tx: Sender<FinalizeMessage>,
+}
+
+impl FinalizeHandle {
+    pub fn new_tip(&self, tip: FinalizeNewTip) -> Result<impl Future<Output = Result<()>>> {
+        let (resp, rx) = smol::channel::bounded(1);
+
+        self.finalize_tx
+            .try_send(FinalizeMessage::NewTip { tip, resp })?;
+
+        Ok(async move { rx.recv().await? })
+    }
+
+    pub fn finalize_txs(&self, txs: Vec<H256>) -> Result<impl Future<Output = Result<()>>> {
+        let (resp, rx) = smol::channel::bounded(1);
+
+        self.finalize_tx
+            .try_send(FinalizeMessage::FinalizeTxs { txs, resp })?;
+
+        Ok(async move { rx.recv().await? })
+    }
+
+    pub fn produce_block(
+        &self,
+        param: OutputParam,
+    ) -> Result<impl Future<Output = Result<(Option<CollectedCustodianCells>, BlockParam)>>> {
+        let (resp, rx) = smol::channel::bounded(1);
+
+        self.finalize_tx
+            .try_send(FinalizeMessage::ProduceBlock { param, resp })?;
+
+        Ok(async move { rx.recv().await? })
+    }
 }
 
 impl Finalize {
