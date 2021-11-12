@@ -105,23 +105,7 @@ impl MemBlock {
         self.txs_prev_state_checkpoint = Some(prev_state_checkpoint);
     }
 
-    pub fn push_tx(&mut self, tx_hash: H256, receipt: &TxReceipt) {
-        let post_state = receipt.post_state();
-        let state_checkpoint = calculate_state_checkpoint(
-            &post_state.merkle_root().unpack(),
-            post_state.count().unpack(),
-        );
-        log::debug!(
-            "[mem-block] push tx {} state {}",
-            hex::encode(tx_hash.as_slice()),
-            hex::encode(state_checkpoint.as_slice())
-        );
-        self.txs.push(tx_hash);
-        self.txs_set.insert(tx_hash);
-        self.state_checkpoints.push(state_checkpoint);
-    }
-
-    pub fn push_tx_merkle_state(&mut self, tx_hash: H256, merkle_state: &AccountMerkleState) {
+    pub fn push_tx(&mut self, tx_hash: H256, merkle_state: &AccountMerkleState) {
         let state_checkpoint = calculate_state_checkpoint(
             &merkle_state.merkle_root().unpack(),
             merkle_state.count().unpack(),

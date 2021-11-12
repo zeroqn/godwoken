@@ -13,7 +13,7 @@ use gw_store::{
 };
 use gw_types::{
     offchain::{BlockParam, CollectedCustodianCells},
-    packed::{AccountMerkleState, OutPoint, TxReceipt},
+    packed::{AccountMerkleState, OutPoint},
     prelude::Unpack,
 };
 
@@ -252,7 +252,7 @@ impl Finalize {
         for (tx_hash, tx_post_state) in
             tx_hashes.zip(self.mem_block_states[tx_offset..tx_end].iter())
         {
-            new_mem_block.push_tx_merkle_state(*tx_hash, &tx_post_state);
+            new_mem_block.push_tx(*tx_hash, &tx_post_state);
         }
 
         let post_merkle_state = match self.mem_block_states.get(tx_end.saturating_sub(1)) {
@@ -376,16 +376,9 @@ impl Finalize {
         for (tx, run_result) in tx_run_results {
             state.apply_run_result(&run_result)?;
 
-            let merkle_state = state.merkle_state()?;
-            let tx_receipt = TxReceipt::build_receipt(
-                tx.witness_hash().into(),
-                run_result,
-                merkle_state.clone(),
-            );
-
             let tx_hash: H256 = tx.hash().into();
-            self.mem_block.push_tx(tx_hash, &tx_receipt);
-
+            let merkle_state = state.merkle_state()?;
+            self.mem_block.push_tx(tx_hash, &merkle_state);
             self.mem_block_states.push(merkle_state);
         }
 
