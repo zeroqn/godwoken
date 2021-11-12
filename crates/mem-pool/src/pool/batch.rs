@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::{bail, Result};
+use futures::FutureExt;
 use gw_common::{
     builtins::CKB_SUDT_ACCOUNT_ID,
     state::{to_short_address, State},
@@ -25,11 +26,12 @@ use smol::channel::{Receiver, Sender, TryRecvError, TrySendError};
 
 use crate::{
     constants::{MAX_MEM_BLOCK_TXS, MAX_MEM_BLOCK_WITHDRAWALS, MAX_WITHDRAWAL_SIZE},
+    pool::finalize::{FinalizeNewTip, FinalizeWithdrawals},
     traits::{MemPoolErrorTxHandler, MemPoolProvider},
     types::EntryList,
 };
 
-use super::{deposit, tx, withdrawal, MemPoolStore};
+use super::{deposit, finalize::FinalizeHandle, tx, withdrawal, MemPoolStore};
 
 #[derive(thiserror::Error, Debug)]
 pub enum BatchError {
@@ -50,37 +52,35 @@ impl<T> From<TrySendError<T>> for BatchError {
     }
 }
 
-pub enum BatchRequest {
-    TxWithdrawal(TxWithdrawal),
-    Reset {
-        old_tip: Option<H256>,
-        new_tip: Option<H256>,
-    },
+pub struct BatchNewTipMessage {
+    old_tip: Option<H256>,
+    new_tip: Option<H256>,
 }
 
-pub enum TxWithdrawal {
+pub enum BatchPushMessage {
     Transaction(L2Transaction),
     Withdrawal(WithdrawalRequest),
 }
 
-impl TxWithdrawal {
+impl BatchPushMessage {
     pub fn hash(&self) -> [u8; 32] {
         match self {
-            TxWithdrawal::Transaction(ref tx) => tx.hash(),
-            TxWithdrawal::Withdrawal(ref w) => w.hash(),
+            BatchPushMessage::Transaction(ref tx) => tx.hash(),
+            BatchPushMessage::Withdrawal(ref w) => w.hash(),
         }
     }
 
     pub fn kind(&self) -> &'static str {
         match self {
-            TxWithdrawal::Transaction(_) => "tx",
-            TxWithdrawal::Withdrawal(_) => "withdrawal",
+            BatchPushMessage::Transaction(_) => "tx",
+            BatchPushMessage::Withdrawal(_) => "withdrawal",
         }
     }
 }
 
 pub struct BatchHandle {
-    batch_tx: Sender<BatchRequest>,
+    push_tx: Sender<BatchPushMessage>,
+    tip_tx: Sender<BatchNewTipMessage>,
 }
 
 pub struct Batch<P: MemPoolProvider, H: MemPoolErrorTxHandler> {
@@ -92,10 +92,13 @@ pub struct Batch<P: MemPoolProvider, H: MemPoolErrorTxHandler> {
     opt_error_tx_handler: Option<H>,
     pending: HashMap<u32, EntryList>,
     batched: Batched,
-    batch_rx: Receiver<BatchRequest>,
+    push_rx: Receiver<BatchPushMessage>,
+    tip_rx: Receiver<BatchNewTipMessage>,
+    finalize_handle: FinalizeHandle,
     config: MemPoolConfig,
 }
 
+// TODO: Spawn error tx handler in background
 impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, H> {
     pub fn build(
         store: MemPoolStore,
@@ -105,8 +108,10 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         block_producer_id: u32,
         opt_error_tx_handler: Option<H>,
         config: MemPoolConfig,
+        finalize_handle: FinalizeHandle,
     ) -> BatchHandle {
-        let (batch_tx, batch_rx) = smol::channel::bounded(config.max_batch_channel_buffer_size);
+        let (push_tx, push_rx) = smol::channel::bounded(config.max_batch_channel_buffer_size);
+        let (tip_tx, tip_rx) = smol::channel::unbounded();
         let max_batch_tx_withdrawal_size = config.max_batch_tx_withdrawal_size;
 
         let batch = Batch {
@@ -118,96 +123,167 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
             opt_error_tx_handler,
             pending: HashMap::new(),
             batched: Default::default(),
-            batch_rx,
+            push_rx,
+            tip_rx,
+            finalize_handle,
             config,
         };
         smol::spawn(batch.in_background(max_batch_tx_withdrawal_size)).detach();
 
-        BatchHandle { batch_tx }
+        BatchHandle { push_tx, tip_tx }
     }
 
     async fn in_background(mut self, batch_size: usize) {
-        let mut batch = Vec::with_capacity(batch_size);
-
         loop {
-            // Wait until we have tx
-            match self.batch_rx.recv().await {
-                Ok(tx) => batch.push(tx),
-                Err(_) if self.batch_rx.is_closed() => {
-                    log::error!("[mem-pool batch] channel shutdown");
-                    return;
+            futures::select! {
+                maybe_tip_msg = self.tip_rx.recv().fuse() => {
+                    self.try_new_tip(maybe_tip_msg.ok(), None);
+                    continue;
                 }
-                Err(_) => (),
-            }
-
-            // TODO: Support interval batch
-            while batch.len() < batch_size {
-                match self.batch_rx.try_recv() {
-                    Ok(tx) => batch.push(tx),
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Closed) => {
-                        log::error!("[mem-pool packager] channel shutdown");
-                        return;
-                    }
+                maybe_push_msg = self.push_rx.recv().fuse() => {
+                    self.try_push(maybe_push_msg.ok(), batch_size);
                 }
-            }
+            };
+        }
+    }
 
-            let batch_size = batch.len();
-            {
-                let total_batch_time = Instant::now();
+    fn try_new_tip(
+        &mut self,
+        opt_msg: Option<BatchNewTipMessage>,
+        opt_db: Option<&StoreTransaction>,
+    ) {
+        let msg = match opt_msg {
+            Some(msg) => msg,
+            None => match self.tip_rx.try_recv() {
+                Ok(msg) => msg,
+                Err(_) if self.tip_rx.is_closed() => {
+                    unreachable!("[mem-pool batch] tip channel shutdown")
+                }
+                Err(_) => return,
+            },
+        };
+
+        let now = Instant::now();
+        if let Err(err) = match opt_db {
+            Some(db) => self.reset(msg.old_tip, msg.new_tip, db),
+            None => {
                 let db = self.store.db().begin_transaction();
-                for req in batch.drain(..) {
-                    match req {
-                        BatchRequest::Reset { old_tip, new_tip } => {
-                            let now = Instant::now();
-                            if let Err(err) = self.reset(old_tip, new_tip) {
-                                log::error!("[mem-pool batch] fail to reset, error {}", err);
-                            }
-                            log::info!(
-                                "[mem-pool batch] reset time: {}ms",
-                                now.elapsed().as_millis(),
-                            );
-                        }
-                        BatchRequest::TxWithdrawal(req) => {
-                            let req_hash = req.hash();
-                            let req_kind = req.kind();
+                let result = self.reset(msg.old_tip, msg.new_tip, &db);
+                db.commit().expect("reset db commit");
+                result
+            }
+        } {
+            panic!("[mem-pool batch] fail to reset, error {}", err);
+        }
 
-                            if let Err(err) = match req {
-                                TxWithdrawal::Transaction(tx) => {
-                                    let t = Instant::now();
-                                    let ret = self.push_transaction(tx, &db);
-                                    if ret.is_ok() {
-                                        log::info!(
-                                            "[mem-pool batch] push tx total time {}ms",
-                                            t.elapsed().as_millis()
-                                        );
-                                    }
-                                    ret
-                                }
-                                TxWithdrawal::Withdrawal(w) => self.push_withdrawal(w, &db),
-                            } {
-                                log::info!(
-                                    "[mem-pool batch] fail to push {} {:?} into mem-pool, err: {}",
-                                    req_kind,
-                                    faster_hex::hex_string(&req_hash),
-                                    err
-                                )
-                            }
-                        }
-                    }
+        macro_rules! empty_none_or {
+            ($vec:expr, $or:expr) => {
+                if $vec.is_empty() {
+                    None
+                } else {
+                    Some($or)
                 }
+            };
+        }
+
+        let finalized_custodians = self.batched.finalized_custodians.clone();
+        let new_tip = FinalizeNewTip {
+            block_hash: self.current_tip.0,
+            block_number: self.current_tip.1,
+            block_info: self.store.mem().get_block_info().expect("batch block info"),
+            withdrawals: empty_none_or!(
+                self.batched.withdrawals,
+                FinalizeWithdrawals {
+                    withdrawal_hashes: self.batched.withdrawals.clone(),
+                    finalized_custodians: finalized_custodians
+                        .expect("batch withdrawal custodians"),
+                }
+            ),
+            deposits: empty_none_or!(self.batched.deposits, self.batched.deposits.clone()),
+            txs: empty_none_or!(self.batched.txs, self.batched.txs.clone()),
+        };
+
+        let res = self.finalize_handle.new_tip(new_tip).expect("send new tip");
+        smol::block_on(res).expect("finalize new tip success");
+
+        log::info!(
+            "[mem-pool batch] reset time: {}ms",
+            now.elapsed().as_millis(),
+        );
+    }
+
+    fn try_push(&mut self, opt_msg: Option<BatchPushMessage>, batch_size: usize) {
+        let mut batch = Vec::with_capacity(batch_size);
+        if let Some(push_msg) = opt_msg {
+            batch.push(push_msg);
+        }
+
+        while batch.len() < batch_size {
+            match self.push_rx.try_recv() {
+                Ok(tx) => batch.push(tx),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Closed) => {
+                    unreachable!("[mem-pool packager] channel shutdown");
+                }
+            }
+        }
+
+        let batch_size = batch.len();
+        let mut tx_hashes: Vec<H256> = Vec::new();
+        {
+            let total_batch_time = Instant::now();
+            let db = self.store.db().begin_transaction();
+            for req in batch.drain(..) {
+                self.try_new_tip(None, Some(&db));
+
+                let req_hash = req.hash();
+                let req_kind = req.kind();
+                let is_tx = matches!(req, BatchPushMessage::Transaction(_));
 
                 let t = Instant::now();
-                if let Err(err) = db.commit() {
-                    log::error!("[mem-pool batch] fail to db commit, err: {}", err);
+                let result = match req {
+                    BatchPushMessage::Transaction(tx) => self.push_transaction(tx, &db),
+                    BatchPushMessage::Withdrawal(w) => self.push_withdrawal(w, &db),
+                };
+
+                match result {
+                    Ok(_) => {
+                        if is_tx {
+                            tx_hashes.push(req_hash.into());
+                        }
+
+                        log::info!(
+                            "[mem-pool batch] push {} {}ms",
+                            req_kind,
+                            t.elapsed().as_millis()
+                        );
+                    }
+                    Err(err) => {
+                        log::info!(
+                            "[mem-pool batch] fail to push {} {:?} into mem-pool, err: {}",
+                            req_kind,
+                            faster_hex::hex_string(&req_hash),
+                            err
+                        )
+                    }
                 }
-                log::info!(
-                    "[mem-pool batch] done, batch size: {}, total time: {}ms, DB commit time: {}ms",
-                    batch_size,
-                    total_batch_time.elapsed().as_millis(),
-                    t.elapsed().as_millis(),
-                );
             }
+
+            let t = Instant::now();
+            if let Err(err) = db.commit() {
+                panic!("[mem-pool batch] fail to db commit, err: {}", err);
+            }
+
+            self.finalize_handle
+                .finalize_txs(tx_hashes)
+                .expect("send finalize txs");
+
+            log::info!(
+                "[mem-pool batch] done, batch size: {}, total time: {}ms, DB commit time: {}ms",
+                batch_size,
+                total_batch_time.elapsed().as_millis(),
+                t.elapsed().as_millis(),
+            );
         }
     }
 
@@ -278,7 +354,12 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         Ok(())
     }
 
-    fn reset(&mut self, old_tip: Option<H256>, new_tip: Option<H256>) -> Result<()> {
+    fn reset(
+        &mut self,
+        old_tip: Option<H256>,
+        new_tip: Option<H256>,
+        db: &StoreTransaction,
+    ) -> Result<()> {
         let mut reinject_txs = Default::default();
         let mut reinject_withdrawals = Default::default();
 
@@ -290,9 +371,9 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         let new_tip_block = self.store.db().get_block(&new_tip)?.expect("new tip block");
 
         if old_tip.is_some() && old_tip != Some(new_tip_block.raw().parent_block_hash().unpack()) {
-            let db = self.store.db();
+            let store_db = self.store.db();
             let old_tip = old_tip.unwrap();
-            let old_tip_block = db.get_block(&old_tip)?.expect("old tip block");
+            let old_tip_block = store_db.get_block(&old_tip)?.expect("old tip block");
 
             let new_number: u64 = new_tip_block.raw().number().unpack();
             let old_number: u64 = old_tip_block.raw().number().unpack();
@@ -315,14 +396,14 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
                     for index in (0..rem.withdrawals().len()).rev() {
                         discarded_withdrawals.push_front(rem.withdrawals().get(index).unwrap());
                     }
-                    rem = db
+                    rem = store_db
                         .get_block(&rem.raw().parent_block_hash().unpack())?
                         .expect("get block");
                 }
                 while add.raw().number().unpack() > rem.raw().number().unpack() {
                     included_txs.extend(add.transactions().into_iter());
                     included_withdrawals.extend(rem.withdrawals().into_iter());
-                    add = db
+                    add = store_db
                         .get_block(&add.raw().parent_block_hash().unpack())?
                         .expect("get block");
                 }
@@ -335,12 +416,12 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
                     for index in (0..rem.withdrawals().len()).rev() {
                         discarded_withdrawals.push_front(rem.withdrawals().get(index).unwrap());
                     }
-                    rem = db
+                    rem = store_db
                         .get_block(&rem.raw().parent_block_hash().unpack())?
                         .expect("get block");
                     included_txs.extend(add.transactions().into_iter());
                     included_withdrawals.extend(add.withdrawals().into_iter());
-                    add = db
+                    add = store_db
                         .get_block(&add.raw().parent_block_hash().unpack())?
                         .expect("get block");
                 }
@@ -376,8 +457,6 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         // set tip
         self.current_tip = (new_tip, new_tip_block.raw().number().unpack());
 
-        let db = self.store.db().begin_transaction();
-
         // batched withdrawals
         let batched_withdrawals: Vec<_> = {
             let mut withdrawals = Vec::with_capacity(self.batched.withdrawals.len());
@@ -400,6 +479,9 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
             txs
         };
 
+        // Reset batched
+        self.batched.reset();
+
         // remove from pending
         self.remove_unexecutables(&db)?;
 
@@ -411,7 +493,6 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         let txs_iter = reinject_txs.into_iter().chain(batched_txs);
 
         self.prepare_next_batch(withdrawals_iter, txs_iter, &db)?;
-        db.commit()?;
 
         Ok(())
     }
@@ -666,5 +747,21 @@ impl Default for Batched {
             txs_set: Default::default(),
             finalized_custodians: None,
         }
+    }
+}
+
+impl Batched {
+    fn reset(&mut self) {
+        self.withdrawals.clear();
+        self.withdrawals.shrink_to_fit();
+        self.withdrawals_set.clear();
+        self.withdrawals_set.shrink_to_fit();
+        self.deposits.clear();
+        self.deposits.shrink_to_fit();
+        self.txs.clear();
+        self.txs.shrink_to_fit();
+        self.txs_set.clear();
+        self.txs_set.shrink_to_fit();
+        self.finalized_custodians = None;
     }
 }

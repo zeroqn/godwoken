@@ -2146,6 +2146,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "faster-hex 0.4.1",
+ "futures",
  "gw-challenge",
  "gw-common",
  "gw-config",

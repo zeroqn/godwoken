@@ -65,6 +65,7 @@ pub struct Finalize {
     finalize_rx: Receiver<FinalizeMessage>,
 }
 
+#[derive(Clone)]
 pub struct FinalizeHandle {
     finalize_tx: Sender<FinalizeMessage>,
 }
@@ -143,7 +144,7 @@ impl Finalize {
                     }
                 }
                 Err(_) if self.finalize_rx.is_closed() => {
-                    panic!("[mem-pool finalize] channel shutdown");
+                    unreachable!("[mem-pool finalize] channel shutdown");
                 }
                 Err(_) => (),
             }
