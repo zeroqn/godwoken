@@ -50,6 +50,35 @@ impl<T> From<TrySendError<T>> for BatchError {
     }
 }
 
+pub enum BatchRequest {
+    TxWithdrawal(TxWithdrawal),
+    Reset {
+        old_tip: Option<H256>,
+        new_tip: Option<H256>,
+    },
+}
+
+pub enum TxWithdrawal {
+    Transaction(L2Transaction),
+    Withdrawal(WithdrawalRequest),
+}
+
+impl TxWithdrawal {
+    pub fn hash(&self) -> [u8; 32] {
+        match self {
+            TxWithdrawal::Transaction(ref tx) => tx.hash(),
+            TxWithdrawal::Withdrawal(ref w) => w.hash(),
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            TxWithdrawal::Transaction(_) => "tx",
+            TxWithdrawal::Withdrawal(_) => "withdrawal",
+        }
+    }
+}
+
 pub struct BatchHandle {
     batch_tx: Sender<BatchRequest>,
 }
@@ -636,35 +665,6 @@ impl Default for Batched {
             txs: Default::default(),
             txs_set: Default::default(),
             finalized_custodians: None,
-        }
-    }
-}
-
-enum BatchRequest {
-    TxWithdrawal(TxWithdrawal),
-    Reset {
-        old_tip: Option<H256>,
-        new_tip: Option<H256>,
-    },
-}
-
-enum TxWithdrawal {
-    Transaction(L2Transaction),
-    Withdrawal(WithdrawalRequest),
-}
-
-impl TxWithdrawal {
-    fn hash(&self) -> [u8; 32] {
-        match self {
-            TxWithdrawal::Transaction(ref tx) => tx.hash(),
-            TxWithdrawal::Withdrawal(ref w) => w.hash(),
-        }
-    }
-
-    fn kind(&self) -> &'static str {
-        match self {
-            TxWithdrawal::Transaction(_) => "tx",
-            TxWithdrawal::Withdrawal(_) => "withdrawal",
         }
     }
 }

@@ -1,8 +1,8 @@
-use std::{sync::Arc, time::Instant};
+use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
 use gw_common::{merkle_utils::calculate_state_checkpoint, smt::SMT, state::State, H256};
-use gw_generator::{traits::StateExt, Generator};
+use gw_generator::traits::StateExt;
 use gw_store::{
     smt::{mem_smt_store::MemSMTStore, smt_store::SMTStore},
     state::{
@@ -12,26 +12,174 @@ use gw_store::{
     transaction::StoreTransaction,
 };
 use gw_types::{
-    offchain::{BlockParam, CollectedCustodianCells},
-    packed::{AccountMerkleState, OutPoint},
+    offchain::{BlockParam, CollectedCustodianCells, RollupContext},
+    packed::{AccountMerkleState, BlockInfo, OutPoint},
     prelude::Unpack,
 };
+use smol::channel::{Receiver, Sender};
 
 use crate::mem_block::MemBlock;
 
 use super::{MemPoolStore, OutputParam};
 
+pub struct FinalizeWithdrawals {
+    withdrawal_hashes: Vec<H256>,
+    finalized_custodians: CollectedCustodianCells,
+}
+
+pub struct FinalizeNewTip {
+    block_hash: H256,
+    block_number: u64,
+    block_info: BlockInfo,
+    withdrawals: Option<FinalizeWithdrawals>,
+    deposits: Option<Vec<OutPoint>>,
+    txs: Option<Vec<H256>>,
+}
+
+pub enum FinalizeMessage {
+    NewTip {
+        tip: FinalizeNewTip,
+        resp: Sender<Result<()>>,
+    },
+    FinalizeTxs {
+        txs: Vec<H256>,
+        resp: Sender<Result<()>>,
+    },
+    ProduceBlock {
+        param: OutputParam,
+        resp: Sender<Result<(Option<CollectedCustodianCells>, BlockParam)>>,
+    },
+}
+
+// TODO: Pass kv only then apply them, use smt update_all once.
+// TODO: Pass kv then we can remove rollup_context
 pub struct Finalize {
     store: MemPoolStore,
-    generator: Arc<Generator>,
+    rollup_context: RollupContext,
     current_tip: (H256, u64),
     mem_block: MemBlock,
     merkle_state: AccountMerkleState, // Finalize state merkle root
+    // TODO: Refactor into MemBlock?
     mem_block_states: Vec<AccountMerkleState>, // States for repackage
-    vec_touched_keys: Vec<Vec<H256>>, // Touched keys for repackage
+    vec_touched_keys: Vec<Vec<H256>>,          // Touched keys for repackage
+    finalize_rx: Receiver<FinalizeMessage>,
+}
+
+pub struct FinalizeHandle {
+    finalize_tx: Sender<FinalizeMessage>,
 }
 
 impl Finalize {
+    pub fn build(
+        store: MemPoolStore,
+        rollup_context: RollupContext,
+        current_tip: (H256, u64),
+        block_info: BlockInfo,
+    ) -> FinalizeHandle {
+        // NOTE: Only ```Batch``` will flush ```FinalizeTxs``` to us, control traffic there.
+        let (finalize_tx, finalize_rx) = smol::channel::unbounded();
+
+        let tip = {
+            let db = store.db().begin_transaction();
+            let opt_tip = db.get_block(&current_tip.0).ok();
+            opt_tip.flatten().expect("current tip exists")
+        };
+        let mem_block = MemBlock::new(block_info, tip.raw().post_account());
+        let merkle_state = tip.raw().post_account();
+
+        let finalize = Finalize {
+            store,
+            rollup_context,
+            current_tip,
+            mem_block,
+            merkle_state,
+            mem_block_states: Vec::new(),
+            vec_touched_keys: Vec::new(),
+            finalize_rx,
+        };
+        smol::spawn(finalize.in_background()).detach();
+
+        FinalizeHandle { finalize_tx }
+    }
+
+    async fn in_background(mut self) {
+        loop {
+            match self.finalize_rx.recv().await {
+                Ok(message) => {
+                    if let Err(err) = self.process_message(message) {
+                        log::error!("[mem-pool finalize] process message error {}", err);
+                    }
+                }
+                Err(_) if self.finalize_rx.is_closed() => {
+                    panic!("[mem-pool finalize] channel shutdown");
+                }
+                Err(_) => (),
+            }
+        }
+    }
+
+    fn process_message(&mut self, msg: FinalizeMessage) -> Result<()> {
+        match msg {
+            FinalizeMessage::NewTip { tip, resp } => {
+                let result = self.new_tip(tip, resp);
+                if let Err(err) = resp.try_send(result) {
+                    log::error!("[mem-pool finalize] response new tip err {}", err);
+                }
+                result
+            }
+            FinalizeMessage::FinalizeTxs { txs, resp } => {
+                let db = self.store.db().begin_transaction();
+                let result = self.finalize_txs(txs, &db);
+                if let Err(err) = resp.try_send(result) {
+                    log::error!("[mem-pool finalize] response finalize txs err {}", err);
+                }
+                result
+            }
+            FinalizeMessage::ProduceBlock { param, resp } => {
+                let result = self.output_mem_block(&param);
+                if let Err(err) = resp.try_send(result) {
+                    log::error!("[mem-pool finalize] response produce block err {}", err);
+                }
+                result.map(|_| ())
+            }
+        }
+    }
+
+    fn new_tip(&mut self, tip: FinalizeNewTip, resp: Sender<Result<()>>) -> Result<()> {
+        let db = self.store.db().begin_transaction();
+
+        self.current_tip = (tip.block_hash, tip.block_number);
+        let tip_block = {
+            let opt_tip = db.get_block(&tip.block_hash).ok();
+            opt_tip.flatten().expect("current tip exists")
+        };
+        self.mem_block = MemBlock::new(tip.block_info, tip_block.raw().post_account());
+        self.merkle_state = tip_block.raw().post_account();
+
+        self.mem_block_states.clear();
+        self.mem_block_states.shrink_to_fit();
+        self.vec_touched_keys.clear();
+        self.vec_touched_keys.shrink_to_fit();
+
+        if let Some(FinalizeWithdrawals {
+            withdrawal_hashes,
+            finalized_custodians,
+        }) = tip.withdrawals
+        {
+            self.finalize_withdrawals(withdrawal_hashes, finalized_custodians, &db)?;
+        }
+
+        if let Some(deposits) = tip.deposits {
+            self.finalize_deposits(deposits, &db)?;
+        }
+
+        if let Some(txs) = tip.txs {
+            self.finalize_txs(txs, &db)?;
+        }
+
+        Ok(())
+    }
+
     fn in_mem_state_tree<'db>(
         &self,
         db: &'db StoreTransaction,
@@ -50,7 +198,7 @@ impl Finalize {
     }
 
     /// output mem block
-    pub fn output_mem_block(
+    fn output_mem_block(
         &self,
         output_param: &OutputParam,
     ) -> Result<(Option<CollectedCustodianCells>, BlockParam)> {
@@ -288,7 +436,7 @@ impl Finalize {
 
             // update the state
             state.apply_withdrawal_request(
-                self.generator.rollup_context(),
+                &self.rollup_context,
                 self.mem_block.block_producer_id(),
                 &withdrawal,
             )?;
@@ -332,7 +480,7 @@ impl Finalize {
 
         let (deposit_cells, deposit_requests): (Vec<_>, Vec<_>) = query_deposits.unzip();
         for req in deposit_requests {
-            state.apply_deposit_requests(self.generator.rollup_context(), &[req])?;
+            state.apply_deposit_requests(&self.rollup_context, &[req])?;
 
             let deposit_touched_keys = state
                 .tracker_mut()
