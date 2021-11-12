@@ -121,6 +121,16 @@ impl MemBlock {
         self.state_checkpoints.push(state_checkpoint);
     }
 
+    pub fn push_tx_merkle_state(&mut self, tx_hash: H256, merkle_state: &AccountMerkleState) {
+        let state_checkpoint = calculate_state_checkpoint(
+            &merkle_state.merkle_root().unpack(),
+            merkle_state.count().unpack(),
+        );
+        self.txs.push(tx_hash);
+        self.txs_set.insert(tx_hash);
+        self.state_checkpoints.push(state_checkpoint);
+    }
+
     pub fn append_touched_keys<I: Iterator<Item = H256>>(&mut self, keys: I) {
         self.touched_keys.extend(keys)
     }
