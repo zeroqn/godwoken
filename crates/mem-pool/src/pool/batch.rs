@@ -57,6 +57,11 @@ pub struct BatchNewTipMessage {
     new_tip: Option<H256>,
 }
 
+pub enum BatchTipMessage {
+    NewTip(BatchNewTipMessage),
+    RecoverFromInvalidState,
+}
+
 pub enum BatchPushMessage {
     Transaction(L2Transaction),
     Withdrawal(WithdrawalRequest),
@@ -78,9 +83,38 @@ impl BatchPushMessage {
     }
 }
 
+#[derive(Clone)]
 pub struct BatchHandle {
     push_tx: Sender<BatchPushMessage>,
-    tip_tx: Sender<BatchNewTipMessage>,
+    tip_tx: Sender<BatchTipMessage>,
+}
+
+impl BatchHandle {
+    pub fn try_new_tip(
+        &self,
+        old_tip: Option<H256>,
+        new_tip: Option<H256>,
+    ) -> Result<(), BatchError> {
+        let tip_msg = BatchNewTipMessage { old_tip, new_tip };
+        self.tip_tx.try_send(BatchTipMessage::NewTip(tip_msg))?;
+        Ok(())
+    }
+
+    pub fn try_push_tx(&self, tx: L2Transaction) -> Result<(), BatchError> {
+        self.push_tx.try_send(BatchPushMessage::Transaction(tx))?;
+        Ok(())
+    }
+
+    pub fn try_push_withdrawal(&self, withdrawal: WithdrawalRequest) -> Result<(), BatchError> {
+        self.push_tx
+            .try_send(BatchPushMessage::Withdrawal(withdrawal))?;
+        Ok(())
+    }
+
+    pub fn recover_from_invalid_state(&self) -> Result<()> {
+        smol::block_on(self.tip_tx.send(BatchTipMessage::RecoverFromInvalidState))?;
+        Ok(())
+    }
 }
 
 pub struct Batch<P: MemPoolProvider, H: MemPoolErrorTxHandler> {
@@ -93,7 +127,7 @@ pub struct Batch<P: MemPoolProvider, H: MemPoolErrorTxHandler> {
     pending: HashMap<u32, EntryList>,
     batched: Batched,
     push_rx: Receiver<BatchPushMessage>,
-    tip_rx: Receiver<BatchNewTipMessage>,
+    tip_rx: Receiver<BatchTipMessage>,
     finalize_handle: FinalizeHandle,
     config: MemPoolConfig,
 }
@@ -147,11 +181,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         }
     }
 
-    fn try_new_tip(
-        &mut self,
-        opt_msg: Option<BatchNewTipMessage>,
-        opt_db: Option<&StoreTransaction>,
-    ) {
+    fn try_new_tip(&mut self, opt_msg: Option<BatchTipMessage>, opt_db: Option<&StoreTransaction>) {
         let msg = match opt_msg {
             Some(msg) => msg,
             None => match self.tip_rx.try_recv() {
@@ -161,6 +191,33 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
                 }
                 Err(_) => return,
             },
+        };
+
+        if matches!(msg, BatchTipMessage::RecoverFromInvalidState) {
+            log::warn!(
+                "[mem-pool batch] try to recovery from invalid state by drop txs & deposits"
+            );
+            log::warn!("[mem-pool batch] drop mem-block");
+            log::warn!(
+                "[mem-pool batch] drop withdrawals: {}",
+                self.batched.withdrawals.len()
+            );
+            log::warn!("[mem-pool batch] drop txs: {}", self.batched.txs.len());
+            for tx_hash in self.batched.txs {
+                log::warn!("[mem-pool] drop tx: {}", hex::encode(tx_hash.as_slice()));
+            }
+            self.batched.reset();
+
+            log::warn!("[mem-pool] drop pending: {}", self.pending.len());
+            self.pending.clear();
+            log::warn!("[mem-pool] try_to_recovery - done");
+
+            return;
+        }
+
+        let msg = match msg {
+            BatchTipMessage::RecoverFromInvalidState => return, // Already handled above
+            BatchTipMessage::NewTip(msg) => msg,
         };
 
         let now = Instant::now();
