@@ -35,6 +35,7 @@ use crate::{
 
 type MerkleState = (H256, u32);
 
+// TODO: split read and write cache
 pub struct MultiMemStore {
     smt: MultiMemSMTStore,
     block_info: RwLock<Option<packed::BlockInfo>>,

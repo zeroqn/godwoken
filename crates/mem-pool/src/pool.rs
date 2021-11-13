@@ -14,7 +14,12 @@ use futures::Future;
 use gw_common::H256;
 use gw_config::{BlockProducerConfig, MemPoolConfig};
 use gw_generator::Generator;
-use gw_store::{chain_view::ChainView, transaction::mem_pool_store::MultiMemStore, Store};
+use gw_store::{
+    chain_view::ChainView,
+    state::mem_pool_state_db::MemPoolStateTree,
+    transaction::{mem_pool_store::MultiMemStore, StoreTransaction},
+    Store,
+};
 use gw_types::{
     offchain::{BlockParam, CollectedCustodianCells, RunResult},
     packed::{BlockInfo, L2Transaction, TxReceipt, WithdrawalRequest},
@@ -153,6 +158,10 @@ impl<P: MemPoolProvider> MemPool<P> {
         Ok(pool)
     }
 
+    pub fn state_tree(&self, db: &StoreTransaction) -> MemPoolStateTree {
+        db.mem_pool_state_tree(self.store.owned_mem())
+    }
+
     pub fn notify_new_tip(&self, new_tip: (H256, u64)) -> Result<()> {
         self.tip_block_number.store(new_tip.1, Ordering::SeqCst);
         self.batch_handle.try_new_tip(new_tip.0)
@@ -205,6 +214,8 @@ impl<P: MemPoolProvider> MemPool<P> {
         )?;
         Ok(run_result)
     }
+
+    pub fn verify_transaction(&self, tx: &L2Transaction) -> Result<()> {}
 
     pub fn verify_withdrawal_request(&self, request: &WithdrawalRequest) -> Result<()> {
         let db = self.store.db().begin_transaction();

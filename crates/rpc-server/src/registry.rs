@@ -508,7 +508,12 @@ async fn execute_raw_l2transaction(
                 )?
             }
             None => {
-                let state = db.mem_pool_state_tree()?;
+                // TODO: refactor
+                let mem_pool = match &*mem_pool {
+                    Some(mem_pool) => mem_pool,
+                    None => bail!(mem_pool_is_disabled_err),
+                };
+                let state = mem_pool.state_tree(&db);
                 generator.unchecked_execute_transaction(
                     &chain_view,
                     &state,
@@ -545,9 +550,9 @@ async fn submit_l2transaction(
     store: Data<Store>,
     mem_pool: Data<Option<MemPool>>,
 ) -> Result<JsonH256, RpcError> {
-    let mem_pool_batch = match &*mem_pool_batch {
-        Some(mem_pool_batch) => mem_pool_batch,
-        None => return Err(mem_pool_is_disabled_err()),
+    let mem_pool = match &*mem_pool {
+        Some(mem_pool) => mem_pool,
+        None => bail!(mem_pool_is_disabled_err),
     };
 
     let l2tx_bytes = l2tx.into_bytes();
@@ -557,7 +562,7 @@ async fn submit_l2transaction(
     {
         // fetch mem-pool state
         let db = store.begin_transaction();
-        let tree = db.mem_pool_state_tree()?;
+        let tree = mem_pool.state_tree(&db);
         // sender_id
         let sender_id = tx.raw().from_id().unpack();
         let sender_nonce: u32 = tree.get_nonce(sender_id)?;

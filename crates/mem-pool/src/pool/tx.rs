@@ -15,7 +15,7 @@ use crate::{constants::MAX_TX_SIZE, traits::MemPoolErrorTxHandler};
 
 use super::offchain_validator::OffchainValidator;
 
-pub fn verify(
+pub fn verify_size_and_nonce(
     tx: &L2Transaction,
     state: &(impl State + CodeStore),
     generator: &Generator,
@@ -27,6 +27,15 @@ pub fn verify(
 
     // verify transaction
     generator.verify_transaction(state, tx)?;
+
+    Ok(())
+}
+
+pub fn verify_signature(
+    tx: &L2Transaction,
+    state: &(impl State + CodeStore),
+    generator: &Generator,
+) -> Result<()> {
     // verify signature
     generator.check_transaction_signature(state, tx)?;
 
