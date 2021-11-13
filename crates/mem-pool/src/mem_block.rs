@@ -53,28 +53,6 @@ impl MemBlock {
         &self.block_info
     }
 
-    // TODO: When reset? block number should increase one
-    pub fn reset(&mut self, tip: &L2Block, estimated_timestamp: Duration) -> MemBlockContent {
-        log::debug!("[mem-block] reset");
-        // update block info
-        let tip_number: u64 = tip.raw().number().unpack();
-        let number = tip_number + 1;
-        self.block_info = BlockInfo::new_builder()
-            .block_producer_id(self.block_producer_id.pack())
-            .timestamp((estimated_timestamp.as_millis() as u64).pack())
-            .number(number.pack())
-            .build();
-        self.prev_merkle_state = tip.raw().post_account();
-        // mem block content
-        let content = MemBlockContent {
-            txs: self.txs.clone(),
-            withdrawals: self.withdrawals.clone(),
-        };
-        // reset status
-        self.clear();
-        content
-    }
-
     pub fn push_withdrawal(&mut self, withdrawal_hash: H256, state_checkpoint: H256) {
         assert!(self.txs.is_empty());
         assert!(self.deposits.is_empty());
