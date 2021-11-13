@@ -445,20 +445,16 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
                 });
                 init_pool.transpose()?
             };
-            let error_tx_handler = pg_pool.clone().map(|pool| {
-                Box::new(ErrorReceiptIndexer::new(pool)) as Box<dyn MemPoolErrorTxHandler + Send>
-            });
-            let mem_pool = Arc::new(Mutex::new(
-                MemPool::create(
-                    base.store.clone(),
-                    base.generator.clone(),
-                    Box::new(mem_pool_provider),
-                    error_tx_handler,
-                    offchain_validator_context,
-                    config.mem_pool.clone(),
-                )
-                .with_context(|| "create mem-pool")?,
-            ));
+            let error_tx_handler = pg_pool.clone().map(|pool| ErrorReceiptIndexer::new(pool));
+            let mem_pool = MemPool::create(
+                base.store.clone(),
+                base.generator.clone(),
+                mem_pool_provider,
+                Some(error_tx_handler),
+                config,
+                &block_producer_config,
+            )
+            .with_context(|| "create mem pool")?;
             (
                 Some(mem_pool),
                 Some(wallet),

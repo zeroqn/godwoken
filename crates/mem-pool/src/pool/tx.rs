@@ -1,4 +1,4 @@
-use std::{collections::HashSet, time::Instant};
+use std::time::Instant;
 
 use anyhow::{bail, Result};
 use gw_common::{state::State, H256};
@@ -7,7 +7,7 @@ use gw_store::chain_view::ChainView;
 use gw_traits::CodeStore;
 use gw_types::{
     offchain::{ErrorTxReceipt, RunResult},
-    packed::{BlockInfo, L2Transaction, TxReceipt},
+    packed::{BlockInfo, L2Transaction},
     prelude::{Entity, Unpack},
 };
 
@@ -33,7 +33,7 @@ pub fn verify(
     Ok(())
 }
 
-pub fn finalize(
+pub fn apply(
     tx: &L2Transaction,
     state: &mut (impl State + StateExt + CodeStore),
     chain_view: &ChainView,

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use async_trait::async_trait;
 use ckb_types::prelude::{Builder, Entity};
 use gw_chain::chain::Chain;
@@ -16,7 +16,7 @@ use gw_jsonrpc_types::{
     },
     test_mode::{ShouldProduceBlock, TestModePayload},
 };
-use gw_mem_pool::batch::{BatchError, MemPoolBatch};
+use gw_mem_pool::{default_provider::DefaultMemPoolProvider, pool};
 use gw_store::{chain_view::ChainView, state::state_db::StateContext, Store};
 use gw_traits::CodeStore;
 use gw_types::{
@@ -33,6 +33,7 @@ use std::{
 
 // type alias
 type RPCServer = Arc<Server<MapRouter>>;
+type MemPool = pool::MemPool<DefaultMemPoolProvider>;
 type AccountID = Uint32;
 type JsonH256 = ckb_fixed_hash::H256;
 type BoxedTestsRPCImpl = Box<dyn TestModeRPC + Send + Sync>;
@@ -95,7 +96,7 @@ pub struct Registry {
     mem_pool_config: MemPoolConfig,
     backend_info: Vec<BackendInfo>,
     node_mode: NodeMode,
-    mem_pool_batch: Option<MemPoolBatch>,
+    mem_pool: Option<MemPool>,
 }
 
 impl Registry {
@@ -110,7 +111,7 @@ impl Registry {
         offchain_mock_context: Option<OffChainMockContext>,
         mem_pool_config: MemPoolConfig,
         node_mode: NodeMode,
-        mem_pool_batch: Option<MemPoolBatch>,
+        mem_pool: Option<MemPool>,
     ) -> Self
     where
         T: TestModeRPC + Send + Sync + 'static,
@@ -128,7 +129,7 @@ impl Registry {
             mem_pool_config,
             backend_info,
             node_mode,
-            mem_pool_batch,
+            mem_pool,
         }
     }
 
@@ -377,33 +378,25 @@ async fn get_tip_block_hash(store: Data<Store>) -> Result<JsonH256> {
 async fn get_transaction_receipt(
     Params((tx_hash,)): Params<(JsonH256,)>,
     store: Data<Store>,
+    mem_pool: Data<Option<MemPool>>,
 ) -> Result<Option<TxReceipt>> {
     let tx_hash = to_h256(tx_hash);
+    if let Some(receipt) = mem_pool.map(|ref pool| pool.get_transaction_receipt(&tx_hash)) {
+        return Ok(receipt);
+    }
+
     let db = store.begin_transaction();
-    // search from db
-    if let Some(receipt) = db.get_transaction_receipt(&tx_hash)?.map(|receipt| {
-        let receipt: TxReceipt = receipt.into();
-        receipt
-    }) {
-        return Ok(Some(receipt));
-    }
-    // search from mem pool
-    match db.get_mem_pool_transaction_receipt(&tx_hash)? {
-        Some(receipt) => Ok(Some(receipt.into())),
-        None => Ok(None),
-    }
+    db.get_transaction_receipt(&tx_hash)?.map(Into::into)
 }
 
 async fn execute_l2transaction(
     Params((l2tx,)): Params<(JsonBytes,)>,
-    mem_pool_batch: Data<Option<MemPoolBatch>>,
+    mem_pool: Data<Option<MemPool>>,
     store: Data<Store>,
 ) -> Result<RunResult, RpcError> {
-    let mem_pool_batch = match &*mem_pool_batch {
-        Some(mem_pool_batch) => mem_pool_batch,
-        None => {
-            return Err(mem_pool_is_disabled_err());
-        }
+    let mem_pool = match &*mem_pool {
+        Some(mem_pool) => mem_pool,
+        None => bail!(mem_pool_is_disabled_err),
     };
 
     let l2tx_bytes = l2tx.into_bytes();
@@ -423,7 +416,7 @@ async fn execute_l2transaction(
         .number(number.pack())
         .build();
 
-    let mut run_result = mem_pool_batch.unchecked_execute_transaction(&tx, &block_info)?;
+    let mut run_result = mem_pool.unchecked_execute_transaction(&tx, &block_info)?;
     if run_result.exit_code != 0 {
         let receipt = gw_types::offchain::ErrorTxReceipt {
             tx_hash: tx.hash().into(),
@@ -455,6 +448,7 @@ async fn execute_raw_l2transaction(
     mem_pool_config: Data<MemPoolConfig>,
     store: Data<Store>,
     generator: Data<Generator>,
+    mem_pool: Data<Option<MemPool>>,
 ) -> Result<RunResult, RpcError> {
     let (raw_l2tx, block_number_opt) = match params {
         ExecuteRawL2TransactionParams::Tip(p) => (p.0, None),
@@ -466,7 +460,6 @@ async fn execute_raw_l2transaction(
     let raw_l2tx = packed::RawL2Transaction::from_slice(&raw_l2tx_bytes)?;
 
     let db = store.begin_transaction();
-
     let block_info = match block_number_opt {
         Some(block_number) => {
             let block_hash = match db.get_block_hash_by_number(block_number)? {
@@ -550,7 +543,7 @@ async fn execute_raw_l2transaction(
 async fn submit_l2transaction(
     Params((l2tx,)): Params<(JsonBytes,)>,
     store: Data<Store>,
-    mem_pool_batch: Data<Option<MemPoolBatch>>,
+    mem_pool: Data<Option<MemPool>>,
 ) -> Result<JsonH256, RpcError> {
     let mem_pool_batch = match &*mem_pool_batch {
         Some(mem_pool_batch) => mem_pool_batch,

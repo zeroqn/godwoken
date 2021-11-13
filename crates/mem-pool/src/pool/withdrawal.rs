@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use super::offchain_validator::OffchainValidator;
 
 // FIXME: remove Vec
-pub fn query_finalized_custodians(
+pub async fn query_finalized_custodians(
     provider: &impl MemPoolProvider,
     generator: &Generator,
     last_finalized_block_number: u64,
@@ -28,19 +28,17 @@ pub fn query_finalized_custodians(
     let last_finalized_block_number = generator
         .rollup_context()
         .last_finalized_block_number(last_finalized_block_number);
-    let task = provider.query_available_custodians(
+
+    provider.query_available_custodians(
         withdrawals,
         last_finalized_block_number,
         generator.rollup_context().to_owned(),
-    );
-    smol::block_on(task)
+    )
 }
 
-pub fn verify(
+pub fn verify_size_and_signature(
     request: &WithdrawalRequest,
-    asset_script: Option<Script>,
     state: &(impl State + CodeStore),
-    finalized_custodians: &CollectedCustodianCells,
     generator: &Generator,
 ) -> Result<()> {
     // check withdrawal size
@@ -51,20 +49,29 @@ pub fn verify(
     // verify withdrawal signature
     generator.check_withdrawal_request_signature(state, request)?;
 
+    Ok(())
+}
+
+pub fn verify_custodians_nonce_balance_and_capacity(
+    request: &WithdrawalRequest,
+    state: &(impl State + CodeStore),
+    generator: &Generator,
+    finalized_custodians: &CollectedCustodianCells,
+    asset_script: Option<Script>,
+) -> Result<()> {
     // verify finalized custodian
     let avaliable_custodians = AvailableCustodians::from(finalized_custodians);
     let withdrawal_generator =
         WithdrawalGenerator::new(generator.rollup_context(), avaliable_custodians);
     withdrawal_generator.verify_remained_amount(request)?;
 
-    // withdrawal basic verification
     generator.verify_withdrawal_request(state, request, asset_script)?;
 
     Ok(())
 }
 
-// WARNING: must no have duplicate withdrawals
-pub fn finalize(
+// FIXME: Apply transaction rollback
+pub fn apply(
     withdrawals: &[WithdrawalRequest],
     state: &mut (impl State + StateExt + CodeStore),
     block_producer_id: u32,

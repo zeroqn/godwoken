@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use futures::FutureExt;
 use gw_common::{
     builtins::CKB_SUDT_ACCOUNT_ID,
@@ -52,13 +52,8 @@ impl<T> From<TrySendError<T>> for BatchError {
     }
 }
 
-pub struct BatchNewTipMessage {
-    old_tip: Option<H256>,
-    new_tip: Option<H256>,
-}
-
 pub enum BatchTipMessage {
-    NewTip(BatchNewTipMessage),
+    NewTip(H256),
     RecoverFromInvalidState,
 }
 
@@ -90,13 +85,8 @@ pub struct BatchHandle {
 }
 
 impl BatchHandle {
-    pub fn try_new_tip(
-        &self,
-        old_tip: Option<H256>,
-        new_tip: Option<H256>,
-    ) -> Result<(), BatchError> {
-        let tip_msg = BatchNewTipMessage { old_tip, new_tip };
-        self.tip_tx.try_send(BatchTipMessage::NewTip(tip_msg))?;
+    pub fn try_new_tip(&self, new_tip: H256) -> Result<(), BatchError> {
+        self.tip_tx.try_send(BatchTipMessage::NewTip(new_tip))?;
         Ok(())
     }
 
@@ -148,7 +138,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         let (tip_tx, tip_rx) = smol::channel::unbounded();
         let max_batch_tx_withdrawal_size = config.max_batch_tx_withdrawal_size;
 
-        let batch = Batch {
+        let mut batch = Batch {
             store,
             generator,
             provider,
@@ -162,6 +152,13 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
             finalize_handle,
             config,
         };
+
+        let db = batch.store.db().begin_transaction();
+        batch
+            .reset(None, current_tip.0, &db)
+            .expect("initial batch");
+        db.commit().expect("initial batch commit");
+
         smol::spawn(batch.in_background(max_batch_tx_withdrawal_size)).detach();
 
         BatchHandle { push_tx, tip_tx }
@@ -215,17 +212,17 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
             return;
         }
 
-        let msg = match msg {
+        let new_tip = match msg {
             BatchTipMessage::RecoverFromInvalidState => return, // Already handled above
-            BatchTipMessage::NewTip(msg) => msg,
+            BatchTipMessage::NewTip(new_tip) => new_tip,
         };
 
         let now = Instant::now();
         if let Err(err) = match opt_db {
-            Some(db) => self.reset(msg.old_tip, msg.new_tip, db),
+            Some(db) => self.reset(Some(self.current_tip.0), Some(new_tip), db),
             None => {
                 let db = self.store.db().begin_transaction();
-                let result = self.reset(msg.old_tip, msg.new_tip, &db);
+                let result = self.reset(Some(self.current_tip.0), Some(new_tip), &db);
                 db.commit().expect("reset db commit");
                 result
             }
@@ -360,31 +357,31 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
             bail!("duplicate withdrawal");
         }
 
-        let asset_script = db.get_asset_script(&withdrawal.raw().sudt_script_hash().unpack())?;
         let state = db.mem_pool_state_tree(self.store.owned_mem());
-        let finalized_custodians = withdrawal::query_finalized_custodians(
+        let finalized_custodians = smol::block_on(withdrawal::query_finalized_custodians(
             &*self.provider.read().unwrap(),
             &self.generator,
             self.current_tip.1,
             vec![withdrawal],
-        )?;
+        ))?;
+        let asset_script = db.get_asset_script(&withdrawal.raw().sudt_script_hash().unpack())?;
 
-        withdrawal::verify(
+        withdrawal::verify_custodians_nonce_balance_and_capacity(
             &withdrawal,
-            asset_script,
             &state,
-            &finalized_custodians,
             &self.generator,
+            &finalized_custodians,
+            asset_script,
         )?;
 
         let account_script_hash: H256 = withdrawal.raw().account_script_hash().unpack();
         let account_id = state
             .get_account_id_by_script_hash(&account_script_hash)?
-            .expect("get account_id");
+            .ok_or_else(|| anyhow!("unknown withdrawal account"))?;
+
         let entry_list = self.pending.entry(account_id).or_default();
         entry_list.withdrawals.push(withdrawal.clone());
 
-        // Add to pool
         db.insert_mem_pool_withdrawal(&withdrawal_hash, withdrawal)?;
 
         Ok(())
@@ -670,7 +667,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         )?;
 
         let mut state = db.mem_pool_state_tree(self.store.owned_mem());
-        let batched = withdrawal::finalize(
+        let batched = withdrawal::apply(
             &withdrawals,
             &mut state,
             self.block_producer_id,
@@ -736,7 +733,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         let opt_error_tx_handler = self.opt_error_tx_handler.as_mut();
 
         tx::verify(&tx, state, &self.generator)?;
-        tx::finalize(
+        tx::apply(
             &tx,
             state,
             chain_view,
