@@ -207,8 +207,12 @@ impl Finalize {
             self.finalize_withdrawals(withdrawal_hashes, finalized_custodians, &db)?;
         }
 
+        let state = self.in_mem_state_tree(&db)?;
         if let Some(deposits) = tip.deposits {
             self.finalize_deposits(deposits, &db)?;
+        } else {
+            self.mem_block
+                .push_deposits(vec![], state.calculate_state_checkpoint()?);
         }
 
         if let Some(txs) = tip.txs {
