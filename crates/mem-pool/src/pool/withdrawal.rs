@@ -29,11 +29,13 @@ pub async fn query_finalized_custodians(
         .rollup_context()
         .last_finalized_block_number(last_finalized_block_number);
 
-    provider.query_available_custodians(
+    let fut_query = provider.query_available_custodians(
         withdrawals,
         last_finalized_block_number,
         generator.rollup_context().to_owned(),
-    )
+    );
+
+    fut_query.await
 }
 
 pub fn verify_size_and_signature(
@@ -77,7 +79,7 @@ pub fn apply(
     block_producer_id: u32,
     finalized_custodians: &CollectedCustodianCells,
     generator: &Generator,
-    opt_offchain_validator: Option<OffchainValidator<'_>>,
+    mut opt_offchain_validator: Option<&mut OffchainValidator<'_>>,
 ) -> Result<Vec<H256>> {
     let available_custodians = AvailableCustodians::from(finalized_custodians);
     let asset_scripts: HashMap<H256, Script> = {
@@ -97,7 +99,7 @@ pub fn apply(
     for withdrawal in withdrawals {
         let withdrawal_hash = withdrawal.hash();
         // check withdrawal request
-        if let Err(err) = generator.check_withdrawal_request_signature(state, &withdrawal) {
+        if let Err(err) = generator.check_withdrawal_request_signature(state, withdrawal) {
             log::info!("[mem-pool] withdrawal signature error: {:?}", err);
             unused_withdrawals.push(withdrawal_hash);
             continue;
@@ -106,7 +108,7 @@ pub fn apply(
         let asset_script = asset_scripts
             .get(&withdrawal.raw().sudt_script_hash().unpack())
             .cloned();
-        if let Err(err) = generator.verify_withdrawal_request(state, &withdrawal, asset_script) {
+        if let Err(err) = generator.verify_withdrawal_request(state, withdrawal, asset_script) {
             log::info!("[mem-pool] withdrawal verification error: {:?}", err);
             unused_withdrawals.push(withdrawal_hash);
             continue;
@@ -128,7 +130,7 @@ pub fn apply(
         }
         total_withdrawal_capacity = new_total_withdrwal_capacity;
 
-        if let Err(err) = withdrawal_verifier.include_and_verify(&withdrawal, &L2Block::default()) {
+        if let Err(err) = withdrawal_verifier.include_and_verify(withdrawal, &L2Block::default()) {
             log::info!(
                 "[mem-pool] withdrawal contextual verification failed : {}",
                 err
@@ -137,7 +139,7 @@ pub fn apply(
             continue;
         }
 
-        if let Some(validator) = opt_offchain_validator {
+        if let Some(ref mut validator) = opt_offchain_validator {
             match validator.verify_withdrawal(withdrawal.clone()) {
                 Ok(cycles) => log::debug!("[mem-pool] offchain withdrawal cycles {:?}", cycles),
                 Err(err) => {
@@ -155,7 +157,7 @@ pub fn apply(
         match state.apply_withdrawal_request(
             generator.rollup_context(),
             block_producer_id,
-            &withdrawal,
+            withdrawal,
         ) {
             Ok(_) => {
                 finalized_withdrawals.push(withdrawal.hash().into());

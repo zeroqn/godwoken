@@ -52,10 +52,7 @@ impl<T> From<TrySendError<T>> for BatchError {
     }
 }
 
-pub enum BatchTipMessage {
-    NewTip(H256),
-    RecoverFromInvalidState,
-}
+pub struct BatchNewTipMessage(H256);
 
 pub enum BatchPushMessage {
     Transaction(L2Transaction),
@@ -81,12 +78,12 @@ impl BatchPushMessage {
 #[derive(Clone)]
 pub struct BatchHandle {
     push_tx: Sender<BatchPushMessage>,
-    tip_tx: Sender<BatchTipMessage>,
+    tip_tx: Sender<BatchNewTipMessage>,
 }
 
 impl BatchHandle {
     pub fn try_new_tip(&self, new_tip: H256) -> Result<(), BatchError> {
-        self.tip_tx.try_send(BatchTipMessage::NewTip(new_tip))?;
+        self.tip_tx.try_send(BatchNewTipMessage(new_tip))?;
         Ok(())
     }
 
@@ -98,11 +95,6 @@ impl BatchHandle {
     pub fn try_push_withdrawal(&self, withdrawal: WithdrawalRequest) -> Result<(), BatchError> {
         self.push_tx
             .try_send(BatchPushMessage::Withdrawal(withdrawal))?;
-        Ok(())
-    }
-
-    pub fn recover_from_invalid_state(&self) -> Result<()> {
-        smol::block_on(self.tip_tx.send(BatchTipMessage::RecoverFromInvalidState))?;
         Ok(())
     }
 }
@@ -117,7 +109,7 @@ pub struct Batch<P: MemPoolProvider, H: MemPoolErrorTxHandler> {
     pending: HashMap<u32, EntryList>,
     batched: Batched,
     push_rx: Receiver<BatchPushMessage>,
-    tip_rx: Receiver<BatchTipMessage>,
+    tip_rx: Receiver<BatchNewTipMessage>,
     finalize_handle: FinalizeHandle,
     config: MemPoolConfig,
 }
@@ -155,7 +147,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
 
         let db = batch.store.db().begin_transaction();
         batch
-            .reset(None, current_tip.0, &db)
+            .reset(None, Some(current_tip.0), &db)
             .expect("initial batch");
         db.commit().expect("initial batch commit");
 
@@ -178,8 +170,12 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         }
     }
 
-    fn try_new_tip(&mut self, opt_msg: Option<BatchTipMessage>, opt_db: Option<&StoreTransaction>) {
-        let msg = match opt_msg {
+    fn try_new_tip(
+        &mut self,
+        opt_msg: Option<BatchNewTipMessage>,
+        opt_db: Option<&StoreTransaction>,
+    ) {
+        let BatchNewTipMessage(new_tip) = match opt_msg {
             Some(msg) => msg,
             None => match self.tip_rx.try_recv() {
                 Ok(msg) => msg,
@@ -188,33 +184,6 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
                 }
                 Err(_) => return,
             },
-        };
-
-        if matches!(msg, BatchTipMessage::RecoverFromInvalidState) {
-            log::warn!(
-                "[mem-pool batch] try to recovery from invalid state by drop txs & deposits"
-            );
-            log::warn!("[mem-pool batch] drop mem-block");
-            log::warn!(
-                "[mem-pool batch] drop withdrawals: {}",
-                self.batched.withdrawals.len()
-            );
-            log::warn!("[mem-pool batch] drop txs: {}", self.batched.txs.len());
-            for tx_hash in self.batched.txs {
-                log::warn!("[mem-pool] drop tx: {}", hex::encode(tx_hash.as_slice()));
-            }
-            self.batched.reset();
-
-            log::warn!("[mem-pool] drop pending: {}", self.pending.len());
-            self.pending.clear();
-            log::warn!("[mem-pool] try_to_recovery - done");
-
-            return;
-        }
-
-        let new_tip = match msg {
-            BatchTipMessage::RecoverFromInvalidState => return, // Already handled above
-            BatchTipMessage::NewTip(new_tip) => new_tip,
         };
 
         let now = Instant::now();
@@ -358,13 +327,14 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         }
 
         let state = db.mem_pool_state_tree(self.store.owned_mem());
+        let sudt_script_hash = withdrawal.raw().sudt_script_hash().unpack();
         let finalized_custodians = smol::block_on(withdrawal::query_finalized_custodians(
             &*self.provider.read().unwrap(),
             &self.generator,
             self.current_tip.1,
-            vec![withdrawal],
+            vec![withdrawal.clone()],
         ))?;
-        let asset_script = db.get_asset_script(&withdrawal.raw().sudt_script_hash().unpack())?;
+        let asset_script = db.get_asset_script(&sudt_script_hash)?;
 
         withdrawal::verify_custodians_nonce_balance_and_capacity(
             &withdrawal,
@@ -394,12 +364,13 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         let mem = self.store.mem();
         let block_info = mem.get_block_info().expect("batch block info");
 
-        let run_result = self.batch_one_tx(&tx, db, &mut state, &chain_view, &block_info)?;
+        let run_result = self.batch_one_tx(&tx, &mut state, &chain_view, &block_info)?;
         let tx_hash: H256 = tx.hash().into();
+        let witness_hash: H256 = tx.witness_hash().into();
         db.insert_mem_pool_transaction(&tx_hash, tx)?;
 
         let receipt =
-            TxReceipt::build_receipt(tx.witness_hash().into(), run_result, Default::default());
+            TxReceipt::build_receipt(witness_hash, run_result.clone(), Default::default());
         self.store.mem().insert_tx_receipt(tx_hash, receipt);
         self.store.mem().insert_run_result(tx_hash, run_result);
         self.batched.txs.push(tx_hash);
@@ -514,7 +485,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         // batched withdrawals
         let batched_withdrawals: Vec<_> = {
             let mut withdrawals = Vec::with_capacity(self.batched.withdrawals.len());
-            for withdrawal_hash in self.batched.withdrawals {
+            for withdrawal_hash in &self.batched.withdrawals {
                 if let Some(withdrawal) = db.get_mem_pool_withdrawal(&withdrawal_hash)? {
                     withdrawals.push(withdrawal);
                 }
@@ -525,7 +496,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         // batched txs
         let batched_txs: Vec<_> = {
             let mut txs = Vec::with_capacity(self.batched.txs.len());
-            for tx_hash in self.batched.txs {
+            for tx_hash in &self.batched.txs {
                 if let Some(tx) = db.get_mem_pool_transaction(&tx_hash)? {
                     txs.push(tx);
                 }
@@ -618,7 +589,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         // Handle state before txs withdrawal
         let (batched, finalized_custodians) = self.batch_withdrawals(withdrawals.collect(), db)?;
         if !batched.is_empty() {
-            self.batched.withdrawals.extend(batched);
+            self.batched.withdrawals.extend(batched.clone());
             self.batched.withdrawals_set.extend(batched);
             self.batched.finalized_custodians = Some(finalized_custodians);
         }
@@ -659,12 +630,12 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         }
         withdrawals.truncate(MAX_MEM_BLOCK_WITHDRAWALS);
 
-        let finalized_custodians = withdrawal::query_finalized_custodians(
+        let finalized_custodians = smol::block_on(withdrawal::query_finalized_custodians(
             &*self.provider.read().unwrap(),
             &self.generator,
             self.current_tip.1,
             withdrawals.clone(),
-        )?;
+        ))?;
 
         let mut state = db.mem_pool_state_tree(self.store.owned_mem());
         let batched = withdrawal::apply(
@@ -676,7 +647,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
             None,
         )?;
 
-        let batched_set: HashSet<H256> = HashSet::from_iter(batched);
+        let batched_set: HashSet<&H256> = HashSet::from_iter(&batched);
         for withdrawal in withdrawals {
             let hash = withdrawal.hash().into();
             if batched_set.contains(&hash) {
@@ -713,7 +684,6 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
     fn batch_one_tx(
         &mut self,
         tx: &L2Transaction,
-        db: &StoreTransaction,
         state: &mut (impl State + StateExt + CodeStore),
         chain_view: &ChainView,
         block_info: &BlockInfo,
@@ -729,10 +699,10 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
             bail!("batch is full, MAX_MEM_BLOCK_TXS {}", MAX_MEM_BLOCK_TXS);
         }
 
-        let mem_store = db.mem_pool_account_smt(self.store.owned_mem());
-        let opt_error_tx_handler = self.opt_error_tx_handler.as_mut();
+        tx::verify_size_and_nonce(&tx, state, &self.generator)?;
+        tx::verify_signature(&tx, state, &self.generator)?;
 
-        tx::verify(&tx, state, &self.generator)?;
+        let opt_error_tx_handler = self.opt_error_tx_handler.as_mut();
         tx::apply(
             &tx,
             state,
@@ -756,12 +726,13 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         let mut batched = Vec::with_capacity(txs.len());
         for tx in txs {
             let tx_hash: H256 = tx.hash().into();
-            match self.batch_one_tx(&tx, db, &mut state, &chain_view, &block_info) {
+            match self.batch_one_tx(&tx, &mut state, &chain_view, &block_info) {
                 Ok(run_result) => {
+                    let witness_hash: H256 = tx.witness_hash().into();
                     db.insert_mem_pool_transaction(&tx_hash, tx)?;
                     let receipt = TxReceipt::build_receipt(
-                        tx.witness_hash().into(),
-                        run_result,
+                        witness_hash,
+                        run_result.clone(),
                         Default::default(),
                     );
                     self.store.mem().insert_tx_receipt(tx_hash, receipt);

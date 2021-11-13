@@ -49,7 +49,7 @@ pub fn apply(
     block_info: &BlockInfo,
     generator: &Generator,
     max_l2_cycles: u64,
-    opt_offchain_validator: Option<OffchainValidator<'_>>,
+    mut opt_offchain_validator: Option<&mut OffchainValidator<'_>>,
     opt_error_tx_handler: Option<&mut impl MemPoolErrorTxHandler>,
 ) -> Result<RunResult> {
     // execute tx
@@ -67,7 +67,7 @@ pub fn apply(
         t.elapsed().as_millis()
     );
 
-    if let Some(validator) = opt_offchain_validator {
+    if let Some(ref mut validator) = opt_offchain_validator {
         let maybe_cycles = validator.verify_tx(tx.clone(), &run_result);
 
         if 0 == run_result.exit_code {

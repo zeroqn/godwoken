@@ -103,7 +103,7 @@ impl FinalizeHandle {
 }
 
 impl Finalize {
-    pub fn build(
+    pub(super) fn build(
         store: MemPoolStore,
         rollup_context: RollupContext,
         current_tip: (H256, u64),
@@ -138,11 +138,7 @@ impl Finalize {
     async fn in_background(mut self) {
         loop {
             match self.finalize_rx.recv().await {
-                Ok(message) => {
-                    if let Err(err) = self.process_message(message) {
-                        log::error!("[mem-pool finalize] process message error {}", err);
-                    }
-                }
+                Ok(message) => self.process_message(message),
                 Err(_) if self.finalize_rx.is_closed() => {
                     unreachable!("[mem-pool finalize] channel shutdown");
                 }
@@ -151,34 +147,43 @@ impl Finalize {
         }
     }
 
-    fn process_message(&mut self, msg: FinalizeMessage) -> Result<()> {
+    fn process_message(&mut self, msg: FinalizeMessage) {
         match msg {
             FinalizeMessage::NewTip { tip, resp } => {
-                let result = self.new_tip(tip, resp);
+                let result = self.new_tip(tip);
+                if let Err(ref err) = result {
+                    log::error!("[mem-pool finalize] new tip err {}", err);
+                }
+
                 if let Err(err) = resp.try_send(result) {
                     log::error!("[mem-pool finalize] response new tip err {}", err);
                 }
-                result
             }
             FinalizeMessage::FinalizeTxs { txs, resp } => {
                 let db = self.store.db().begin_transaction();
                 let result = self.finalize_txs(txs, &db);
+                if let Err(ref err) = result {
+                    log::error!("[mem-pool finalize] txs err {}", err);
+                }
+
                 if let Err(err) = resp.try_send(result) {
                     log::error!("[mem-pool finalize] response finalize txs err {}", err);
                 }
-                result
             }
             FinalizeMessage::ProduceBlock { param, resp } => {
                 let result = self.output_mem_block(&param);
+                if let Err(ref err) = result {
+                    log::error!("[mem-pool finalize] produce block err {}", err);
+                }
+
                 if let Err(err) = resp.try_send(result) {
                     log::error!("[mem-pool finalize] response produce block err {}", err);
                 }
-                result.map(|_| ())
             }
         }
     }
 
-    fn new_tip(&mut self, tip: FinalizeNewTip, resp: Sender<Result<()>>) -> Result<()> {
+    fn new_tip(&mut self, tip: FinalizeNewTip) -> Result<()> {
         let db = self.store.db().begin_transaction();
 
         self.current_tip = (tip.block_hash, tip.block_number);
@@ -334,7 +339,7 @@ impl Finalize {
 
         // first time package, return the whole mem block
         if retry_count == 0 {
-            let mem_block = self.mem_block.clone();
+            let mut mem_block = self.mem_block.clone();
 
             assert!(mem_block.touched_keys().is_empty(), "append before package");
             mem_block.append_touched_keys(self.vec_touched_keys.iter().flatten().cloned());
@@ -381,6 +386,7 @@ impl Finalize {
 
         assert!(mem_block.state_checkpoints().len() >= withdrawal_hashes.len());
         assert!(self.vec_touched_keys.len() >= withdrawal_hashes.len());
+        let withdrawals_len = withdrawal_hashes.len();
         for ((hash, checkpoint), touched_keys) in withdrawal_hashes
             .zip(mem_block.state_checkpoints().iter())
             .zip(self.vec_touched_keys.iter())
@@ -404,7 +410,7 @@ impl Finalize {
                 }
                 (false, true) => {
                     // no depoists, use withdrawals post state
-                    let prev_txs_state_offset = withdrawal_hashes.len().saturating_sub(1);
+                    let prev_txs_state_offset = withdrawals_len.saturating_sub(1);
                     (vec![], &self.mem_block_states[prev_txs_state_offset])
                 }
                 (true, false) | (false, false) => {
@@ -508,10 +514,10 @@ impl Finalize {
         let mem_store = self.store.mem();
         let query_deposits = deposits.into_iter().map(|d| {
             let deposit = mem_store.get_deposit(&d).expect("finalize deposit exists");
-            (deposit, deposit.request.clone())
+            (deposit.request.clone(), deposit)
         });
 
-        let (deposit_cells, deposit_requests): (Vec<_>, Vec<_>) = query_deposits.unzip();
+        let (deposit_requests, deposit_cells): (Vec<_>, Vec<_>) = query_deposits.unzip();
         for req in deposit_requests {
             state.apply_deposit_requests(&self.rollup_context, &[req])?;
 

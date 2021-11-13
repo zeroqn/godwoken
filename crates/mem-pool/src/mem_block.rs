@@ -3,7 +3,7 @@ use std::{collections::HashSet, time::Duration};
 use gw_common::{merkle_utils::calculate_state_checkpoint, H256};
 use gw_types::{
     offchain::{CollectedCustodianCells, DepositInfo},
-    packed::{AccountMerkleState, BlockInfo, L2Block, TxReceipt},
+    packed::{AccountMerkleState, BlockInfo, L2Block},
     prelude::*,
 };
 
@@ -53,6 +53,7 @@ impl MemBlock {
         &self.block_info
     }
 
+    // TODO: When reset? block number should increase one
     pub fn reset(&mut self, tip: &L2Block, estimated_timestamp: Duration) -> MemBlockContent {
         log::debug!("[mem-block] reset");
         // update block info
@@ -72,18 +73,6 @@ impl MemBlock {
         // reset status
         self.clear();
         content
-    }
-
-    pub fn clear(&mut self) {
-        self.txs.clear();
-        self.txs_set.clear();
-        self.withdrawals.clear();
-        self.withdrawals_set.clear();
-        self.finalized_custodians = None;
-        self.deposits.clear();
-        self.state_checkpoints.clear();
-        self.txs_prev_state_checkpoint = None;
-        self.touched_keys.clear();
     }
 
     pub fn push_withdrawal(&mut self, withdrawal_hash: H256, state_checkpoint: H256) {

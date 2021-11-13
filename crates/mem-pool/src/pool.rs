@@ -9,7 +9,6 @@
 //!
 
 use anyhow::Result;
-use arc_swap::access::DynAccess;
 use futures::Future;
 use gw_common::H256;
 use gw_config::{BlockProducerConfig, MemPoolConfig};
@@ -23,7 +22,7 @@ use gw_store::{
 use gw_types::{
     offchain::{BlockParam, CollectedCustodianCells, RunResult},
     packed::{BlockInfo, L2Transaction, TxReceipt, WithdrawalRequest},
-    prelude::{Entity, Pack, Unpack},
+    prelude::{Builder, Entity, Pack, Unpack},
 };
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -91,18 +90,18 @@ pub struct MemPool<P: MemPoolProvider> {
     generator: Arc<Generator>,
     /// MemPoolProvider
     provider: Arc<RwLock<P>>,
-    tip_block_number: AtomicU64,
+    tip_block_number: Arc<AtomicU64>,
     batch_handle: BatchHandle,
     finalize_handle: FinalizeHandle,
     config: MemPoolConfig,
 }
 
-impl<P: MemPoolProvider> MemPool<P> {
+impl<P: MemPoolProvider + 'static> MemPool<P> {
     pub fn create(
         store: Store,
         generator: Arc<Generator>,
-        provider: impl MemPoolProvider,
-        opt_error_tx_handler: Option<impl MemPoolErrorTxHandler>,
+        provider: P,
+        opt_error_tx_handler: Option<impl MemPoolErrorTxHandler + 'static>,
         config: MemPoolConfig,
         block_producer_config: &BlockProducerConfig,
     ) -> Result<Self> {
@@ -149,7 +148,7 @@ impl<P: MemPoolProvider> MemPool<P> {
             store,
             generator,
             provider,
-            tip_block_number: AtomicU64::new(tip.1),
+            tip_block_number: Arc::new(AtomicU64::new(tip.1)),
             batch_handle,
             finalize_handle,
             config,
@@ -158,13 +157,15 @@ impl<P: MemPoolProvider> MemPool<P> {
         Ok(pool)
     }
 
-    pub fn state_tree(&self, db: &StoreTransaction) -> MemPoolStateTree {
+    pub fn state_tree<'a>(&self, db: &'a StoreTransaction) -> MemPoolStateTree<'a> {
         db.mem_pool_state_tree(self.store.owned_mem())
     }
 
+    // FIXME: should only one error type, which is channel is full
     pub fn notify_new_tip(&self, new_tip: (H256, u64)) -> Result<()> {
         self.tip_block_number.store(new_tip.1, Ordering::SeqCst);
-        self.batch_handle.try_new_tip(new_tip.0)
+        self.batch_handle.try_new_tip(new_tip.0)?;
+        Ok(())
     }
 
     pub fn try_push_transaction(&self, tx: L2Transaction) -> Result<()> {
@@ -186,8 +187,9 @@ impl<P: MemPoolProvider> MemPool<P> {
     pub async fn output_mem_block(
         &self,
         param: OutputParam,
-    ) -> Result<impl Future<Output = (Option<CollectedCustodianCells>, BlockParam)>> {
-        self.finalize_handle.produce_block(param)?.await
+    ) -> Result<impl Future<Output = Result<(Option<CollectedCustodianCells>, BlockParam)>>> {
+        let fut_block = self.finalize_handle.produce_block(param)?;
+        Ok(async move { fut_block.await })
     }
 
     pub fn unchecked_execute_transaction(
@@ -215,8 +217,6 @@ impl<P: MemPoolProvider> MemPool<P> {
         Ok(run_result)
     }
 
-    pub fn verify_transaction(&self, tx: &L2Transaction) -> Result<()> {}
-
     pub fn verify_withdrawal_request(&self, request: &WithdrawalRequest) -> Result<()> {
         let db = self.store.db().begin_transaction();
         let state = db.mem_pool_state_tree(self.store.owned_mem());
@@ -225,7 +225,7 @@ impl<P: MemPoolProvider> MemPool<P> {
         let provider = self.provider.read().unwrap();
         let last_finalized_block_number = self.tip_block_number.load(Ordering::SeqCst);
         let finalized_custodians = smol::block_on(withdrawal::query_finalized_custodians(
-            &provider,
+            &*provider,
             &self.generator,
             last_finalized_block_number,
             vec![request.to_owned()],

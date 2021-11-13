@@ -555,6 +555,7 @@ async fn submit_l2transaction(
         None => bail!(mem_pool_is_disabled_err),
     };
 
+    // FIXME: refactor nonce verification
     let l2tx_bytes = l2tx.into_bytes();
     let tx = packed::L2Transaction::from_slice(&l2tx_bytes)?;
     let tx_hash = to_jsonh256(tx.hash().into());

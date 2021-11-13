@@ -8,6 +8,9 @@ pub fn finalize(
     generator: &Generator,
     deposit_cell: &DepositInfo,
 ) -> Result<()> {
-    state.apply_deposit_requests(generator.rollup_context(), &[deposit_cell.request])?;
+    state.apply_deposit_requests(
+        generator.rollup_context(),
+        &[deposit_cell.request.to_owned()],
+    )?;
     Ok(())
 }
