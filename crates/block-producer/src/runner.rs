@@ -21,8 +21,7 @@ use gw_generator::{
     Generator,
 };
 use gw_mem_pool::{
-    batch::MemPoolBatch, default_provider::DefaultMemPoolProvider, pool::MemPool,
-    traits::MemPoolErrorTxHandler,
+    default_provider::DefaultMemPoolProvider, pool::MemPool, traits::MemPoolErrorTxHandler,
 };
 use gw_poa::PoA;
 use gw_rpc_client::rpc_client::RPCClient;
@@ -119,7 +118,7 @@ async fn poll_loop(
                 .await
                 .map_err(|err| {
                     anyhow!(
-                        "Error occured when polling chain_updater, event: {}, error: {}",
+                        "Error occurred when polling chain_updater, event: {}, error: {}",
                         event,
                         err
                     )
@@ -131,7 +130,7 @@ async fn poll_loop(
                     .await
                     .map_err(|err| {
                         anyhow!(
-                            "Error occured when polling challenger, event: {}, error: {}",
+                            "Error occurred when polling challenger, event: {}, error: {}",
                             event,
                             err
                         )
@@ -144,7 +143,7 @@ async fn poll_loop(
                     .await
                     .map_err(|err| {
                         anyhow!(
-                            "Error occured when polling block_producer, event: {}, error: {}",
+                            "Error occurred when polling block_producer, event: {}, error: {}",
                             event,
                             err
                         )
@@ -154,7 +153,7 @@ async fn poll_loop(
             if let Some(ref cleaner) = inner.cleaner {
                 cleaner.handle_event(event.clone()).await.map_err(|err| {
                     anyhow!(
-                        "Error occured when polling block_producer, event: {}, error: {}",
+                        "Error occurred when polling block_producer, event: {}, error: {}",
                         event,
                         err
                     )
@@ -411,18 +410,18 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
                     .await
             })?;
 
-            let mut offchain_validator_context = None;
-            if let Some(validator_config) = config.offchain_validator {
-                let debug_config = config.debug.clone();
-
-                let context = OffChainValidatorContext::build(
-                    &offchain_mock_context,
-                    debug_config,
-                    validator_config,
-                )?;
-
-                offchain_validator_context = Some(context);
-            }
+            // let mut offchain_validator_context = None;
+            // if let Some(validator_config) = config.offchain_validator {
+            //     let debug_config = config.debug.clone();
+            //
+            //     let context = OffChainValidatorContext::build(
+            //         &offchain_mock_context,
+            //         debug_config,
+            //         validator_config,
+            //     )?;
+            //
+            //     offchain_validator_context = Some(context);
+            // }
 
             let mem_pool_provider = DefaultMemPoolProvider::new(
                 base.rpc_client.clone(),
@@ -445,13 +444,13 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
                 });
                 init_pool.transpose()?
             };
-            let error_tx_handler = pg_pool.clone().map(|pool| ErrorReceiptIndexer::new(pool));
+            let opt_error_tx_handler = pg_pool.clone().map(ErrorReceiptIndexer::new);
             let mem_pool = MemPool::create(
                 base.store.clone(),
                 base.generator.clone(),
                 mem_pool_provider,
-                Some(error_tx_handler),
-                config,
+                opt_error_tx_handler,
+                config.mem_pool.clone(),
                 &block_producer_config,
             )
             .with_context(|| "create mem pool")?;
@@ -601,15 +600,6 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
         }
     };
 
-    // Transaction packager background service
-    let mem_pool_batch = match mem_pool.as_ref() {
-        Some(mem_pool) => {
-            let inner = smol::block_on(mem_pool.lock()).inner();
-            Some(MemPoolBatch::new(inner, Arc::clone(mem_pool)))
-        }
-        None => None,
-    };
-
     // RPC registry
     let rpc_registry = Registry::new(
         store,
@@ -621,7 +611,7 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
         offchain_mock_context,
         config.mem_pool.clone(),
         config.node_mode,
-        mem_pool_batch,
+        mem_pool.clone(),
     );
 
     let (exit_sender, exit_recv) = async_channel::bounded(100);

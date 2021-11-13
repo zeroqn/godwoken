@@ -1,30 +1,21 @@
-use std::{collections::HashSet, time::Duration};
+use std::collections::HashSet;
 
 use gw_common::{merkle_utils::calculate_state_checkpoint, H256};
 use gw_types::{
     offchain::{CollectedCustodianCells, DepositInfo},
-    packed::{AccountMerkleState, BlockInfo, L2Block},
+    packed::{AccountMerkleState, BlockInfo},
     prelude::*,
 };
-
-pub struct MemBlockContent {
-    pub withdrawals: Vec<H256>,
-    pub txs: Vec<H256>,
-}
 
 #[derive(Debug, Default, Clone)]
 pub struct MemBlock {
     block_producer_id: u32,
     /// Finalized txs
     txs: Vec<H256>,
-    /// Txs set
-    txs_set: HashSet<H256>,
     /// Finalized withdrawals
     withdrawals: Vec<H256>,
     /// Finalized custodians to produce finalized withdrawals
     finalized_custodians: Option<CollectedCustodianCells>,
-    /// Withdrawals set
-    withdrawals_set: HashSet<H256>,
     /// Finalized withdrawals
     deposits: Vec<DepositInfo>,
     /// State check points
@@ -57,7 +48,6 @@ impl MemBlock {
         assert!(self.txs.is_empty());
         assert!(self.deposits.is_empty());
         self.withdrawals.push(withdrawal_hash);
-        self.withdrawals_set.insert(withdrawal_hash);
         self.state_checkpoints.push(state_checkpoint);
     }
 
@@ -78,7 +68,6 @@ impl MemBlock {
             merkle_state.count().unpack(),
         );
         self.txs.push(tx_hash);
-        self.txs_set.insert(tx_hash);
         self.state_checkpoints.push(state_checkpoint);
     }
 
@@ -94,20 +83,12 @@ impl MemBlock {
         self.finalized_custodians.as_ref()
     }
 
-    pub fn withdrawals_set(&self) -> &HashSet<H256> {
-        &self.withdrawals_set
-    }
-
     pub fn deposits(&self) -> &[DepositInfo] {
         &self.deposits
     }
 
     pub fn txs(&self) -> &[H256] {
         &self.txs
-    }
-
-    pub fn txs_set(&self) -> &HashSet<H256> {
-        &self.txs_set
     }
 
     pub fn state_checkpoints(&self) -> &[H256] {

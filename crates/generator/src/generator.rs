@@ -128,7 +128,7 @@ impl Generator {
         let vm_version = match global_vm_version {
             0 => VMVersion::V0,
             1 => VMVersion::V1,
-            ver => panic!("Unsupport VMVersion: {}", ver),
+            ver => panic!("Unsupported VMVersion: {}", ver),
         };
         let core_machine = vm_version.init_core_machine(max_cycles);
         let machine_builder = DefaultMachineBuilder::new(core_machine)

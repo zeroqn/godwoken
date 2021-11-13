@@ -439,7 +439,7 @@ impl Finalize {
         for (tx_hash, tx_post_state) in
             tx_hashes.zip(self.mem_block_states[tx_offset..tx_end].iter())
         {
-            new_mem_block.push_tx(*tx_hash, &tx_post_state);
+            new_mem_block.push_tx(*tx_hash, tx_post_state);
         }
 
         let post_merkle_state = match self.mem_block_states.get(tx_end.saturating_sub(1)) {

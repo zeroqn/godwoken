@@ -39,8 +39,6 @@ pub enum BatchError {
     ExceededMaxLimit,
     #[error("background batch service shutdown")]
     Shutdown,
-    #[error("push {0}")]
-    Push(anyhow::Error),
 }
 
 impl<T> From<TrySendError<T>> for BatchError {
@@ -52,7 +50,10 @@ impl<T> From<TrySendError<T>> for BatchError {
     }
 }
 
-pub struct BatchNewTipMessage(H256);
+pub enum BatchTipMessage {
+    NewTip(H256),
+    Reset,
+}
 
 pub enum BatchPushMessage {
     Transaction(L2Transaction),
@@ -78,21 +79,26 @@ impl BatchPushMessage {
 #[derive(Clone)]
 pub struct BatchHandle {
     push_tx: Sender<BatchPushMessage>,
-    tip_tx: Sender<BatchNewTipMessage>,
+    tip_tx: Sender<BatchTipMessage>,
 }
 
 impl BatchHandle {
-    pub fn try_new_tip(&self, new_tip: H256) -> Result<(), BatchError> {
-        self.tip_tx.try_send(BatchNewTipMessage(new_tip))?;
+    pub fn new_tip(&self, new_tip: H256) -> Result<(), BatchError> {
+        self.tip_tx.try_send(BatchTipMessage::NewTip(new_tip))?;
         Ok(())
     }
 
-    pub fn try_push_tx(&self, tx: L2Transaction) -> Result<(), BatchError> {
+    pub fn reset(&self) -> Result<(), BatchError> {
+        self.tip_tx.try_send(BatchTipMessage::Reset)?;
+        Ok(())
+    }
+
+    pub fn push_tx(&self, tx: L2Transaction) -> Result<(), BatchError> {
         self.push_tx.try_send(BatchPushMessage::Transaction(tx))?;
         Ok(())
     }
 
-    pub fn try_push_withdrawal(&self, withdrawal: WithdrawalRequest) -> Result<(), BatchError> {
+    pub fn push_withdrawal(&self, withdrawal: WithdrawalRequest) -> Result<(), BatchError> {
         self.push_tx
             .try_send(BatchPushMessage::Withdrawal(withdrawal))?;
         Ok(())
@@ -109,14 +115,15 @@ pub struct Batch<P: MemPoolProvider, H: MemPoolErrorTxHandler> {
     pending: HashMap<u32, EntryList>,
     batched: Batched,
     push_rx: Receiver<BatchPushMessage>,
-    tip_rx: Receiver<BatchNewTipMessage>,
+    tip_rx: Receiver<BatchTipMessage>,
     finalize_handle: FinalizeHandle,
     config: MemPoolConfig,
 }
 
 // TODO: Spawn error tx handler in background
 impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, H> {
-    pub fn build(
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn build(
         store: MemPoolStore,
         generator: Arc<Generator>,
         provider: Arc<RwLock<P>>,
@@ -160,7 +167,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         loop {
             futures::select! {
                 maybe_tip_msg = self.tip_rx.recv().fuse() => {
-                    self.try_new_tip(maybe_tip_msg.ok(), None);
+                    self.check_and_process_tip_message(maybe_tip_msg.ok(), None);
                     continue;
                 }
                 maybe_push_msg = self.push_rx.recv().fuse() => {
@@ -170,12 +177,12 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         }
     }
 
-    fn try_new_tip(
+    fn check_and_process_tip_message(
         &mut self,
-        opt_msg: Option<BatchNewTipMessage>,
+        opt_msg: Option<BatchTipMessage>,
         opt_db: Option<&StoreTransaction>,
     ) {
-        let BatchNewTipMessage(new_tip) = match opt_msg {
+        let tip_msg = match opt_msg {
             Some(msg) => msg,
             None => match self.tip_rx.try_recv() {
                 Ok(msg) => msg,
@@ -184,6 +191,11 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
                 }
                 Err(_) => return,
             },
+        };
+
+        let new_tip = match tip_msg {
+            BatchTipMessage::NewTip(new_tip) => new_tip,
+            BatchTipMessage::Reset => self.current_tip.0,
         };
 
         let now = Instant::now();
@@ -257,7 +269,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
             let total_batch_time = Instant::now();
             let db = self.store.db().begin_transaction();
             for req in batch.drain(..) {
-                self.try_new_tip(None, Some(&db));
+                self.check_and_process_tip_message(None, Some(&db));
 
                 let req_hash = req.hash();
                 let req_kind = req.kind();
@@ -297,7 +309,9 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
                 panic!("[mem-pool batch] fail to db commit, err: {}", err);
             }
 
-            self.finalize_handle
+            // TODO: wait?
+            let _fut_finalize = self
+                .finalize_handle
                 .finalize_txs(tx_hashes)
                 .expect("send finalize txs");
 
@@ -360,7 +374,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
     fn push_transaction(&mut self, tx: L2Transaction, db: &StoreTransaction) -> Result<()> {
         let mut state = db.mem_pool_state_tree(self.store.owned_mem());
         let tip_block_hash = db.get_tip_block_hash()?;
-        let chain_view = ChainView::new(&db, tip_block_hash);
+        let chain_view = ChainView::new(db, tip_block_hash);
         let mem = self.store.mem();
         let block_info = mem.get_block_info().expect("batch block info");
 
@@ -486,7 +500,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         let batched_withdrawals: Vec<_> = {
             let mut withdrawals = Vec::with_capacity(self.batched.withdrawals.len());
             for withdrawal_hash in &self.batched.withdrawals {
-                if let Some(withdrawal) = db.get_mem_pool_withdrawal(&withdrawal_hash)? {
+                if let Some(withdrawal) = db.get_mem_pool_withdrawal(withdrawal_hash)? {
                     withdrawals.push(withdrawal);
                 }
             }
@@ -497,7 +511,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         let batched_txs: Vec<_> = {
             let mut txs = Vec::with_capacity(self.batched.txs.len());
             for tx_hash in &self.batched.txs {
-                if let Some(tx) = db.get_mem_pool_transaction(&tx_hash)? {
+                if let Some(tx) = db.get_mem_pool_transaction(tx_hash)? {
                     txs.push(tx);
                 }
             }
@@ -508,7 +522,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         self.batched.reset();
 
         // remove from pending
-        self.remove_unexecutables(&db)?;
+        self.remove_unexecutables(db)?;
 
         log::info!("[mem-pool batch] reset reinject txs: {} batched txs: {} reinject withdrawals: {} batched withdrawals: {}", reinject_txs.len(), batched_txs.len(), reinject_withdrawals.len(), batched_withdrawals.len());
 
@@ -517,7 +531,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         // re-inject txs
         let txs_iter = reinject_txs.into_iter().chain(batched_txs);
 
-        self.prepare_next_batch(withdrawals_iter, txs_iter, &db)?;
+        self.prepare_next_batch(withdrawals_iter, txs_iter, db)?;
 
         Ok(())
     }
@@ -699,12 +713,12 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
             bail!("batch is full, MAX_MEM_BLOCK_TXS {}", MAX_MEM_BLOCK_TXS);
         }
 
-        tx::verify_size_and_nonce(&tx, state, &self.generator)?;
-        tx::verify_signature(&tx, state, &self.generator)?;
+        tx::verify_size_and_nonce(tx, state, &self.generator)?;
+        tx::verify_signature(tx, state, &self.generator)?;
 
         let opt_error_tx_handler = self.opt_error_tx_handler.as_mut();
         tx::apply(
-            &tx,
+            tx,
             state,
             chain_view,
             block_info,
@@ -719,7 +733,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         let mut state = db.mem_pool_state_tree(self.store.owned_mem());
 
         let tip_block_hash = db.get_tip_block_hash()?;
-        let chain_view = ChainView::new(&db, tip_block_hash);
+        let chain_view = ChainView::new(db, tip_block_hash);
         let mem = self.store.mem();
         let block_info = mem.get_block_info().expect("batch block info");
 

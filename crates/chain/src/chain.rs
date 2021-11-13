@@ -9,7 +9,7 @@ use gw_generator::{
     ChallengeContext, Generator,
 };
 use gw_jsonrpc_types::debugger::ReprMockTransaction;
-use gw_mem_pool::pool::MemPool;
+use gw_mem_pool::default_provider::DefaultMemPoolProvider;
 use gw_store::{
     chain_view::ChainView, state::state_db::StateContext, transaction::StoreTransaction, Store,
 };
@@ -23,8 +23,7 @@ use gw_types::{
     },
     prelude::{Builder as GWBuilder, Entity as GWEntity, Pack as GWPack, Unpack as GWUnpack},
 };
-use smol::lock::Mutex;
-use std::{collections::HashSet, convert::TryFrom, hash::Hash, sync::Arc};
+use std::{collections::HashSet, convert::TryFrom, sync::Arc};
 
 #[derive(Debug, Clone)]
 pub struct ChallengeCell {
@@ -174,6 +173,8 @@ impl LocalState {
     }
 }
 
+pub type MemPool = gw_mem_pool::pool::MemPool<DefaultMemPoolProvider>;
+
 pub struct Chain {
     rollup_type_script_hash: [u8; 32],
     rollup_config_hash: [u8; 32],
@@ -182,7 +183,7 @@ pub struct Chain {
     last_sync_event: SyncEvent,
     local_state: LocalState,
     generator: Arc<Generator>,
-    mem_pool: Option<Arc<Mutex<MemPool>>>,
+    mem_pool: Option<MemPool>,
     complete_initial_syncing: bool,
     skipped_invalid_block_list: HashSet<H256>,
 }
@@ -194,7 +195,7 @@ impl Chain {
         config: &ChainConfig,
         store: Store,
         generator: Arc<Generator>,
-        mem_pool: Option<Arc<Mutex<MemPool>>>,
+        mem_pool: Option<MemPool>,
     ) -> Result<Self> {
         // convert serde types to gw-types
         assert_eq!(
@@ -253,7 +254,7 @@ impl Chain {
         &self.store
     }
 
-    pub fn mem_pool(&self) -> &Option<Arc<Mutex<MemPool>>> {
+    pub fn mem_pool(&self) -> &Option<MemPool> {
         &self.mem_pool
     }
 
@@ -284,7 +285,8 @@ impl Chain {
             if !self.complete_initial_syncing {
                 // Do first notify
                 let tip_block_hash: H256 = self.local_state.tip.hash().into();
-                smol::block_on(async { mem_pool.lock().await.notify_new_tip(tip_block_hash) })?;
+                let tip_block_number: u64 = self.local_state.tip.raw().number().unpack();
+                mem_pool.notify_new_tip((tip_block_hash, tip_block_number))?;
             }
         }
         self.complete_initial_syncing = true;
@@ -358,7 +360,7 @@ impl Chain {
                 context,
             }) => (transaction, context),
         };
-        let global_state = parse_global_state(&transaction, &self.rollup_type_script_hash)?;
+        let global_state = parse_global_state(transaction, &self.rollup_type_script_hash)?;
         let status = {
             let status: u8 = self.local_state.last_global_state.status().into();
             Status::try_from(status).expect("invalid status")
@@ -400,8 +402,8 @@ impl Chain {
                         }) => {
                             if let Some(ref target) = self.challenge_target {
                                 db.insert_bad_block(
-                                    &l2block,
-                                    &l2block_committed_info,
+                                    l2block,
+                                    l2block_committed_info,
                                     &global_state,
                                 )?;
                                 log::info!("insert bad block 0x{}", hex::encode(l2block.hash()));
@@ -449,7 +451,7 @@ impl Chain {
                                 }
                             };
 
-                            db.insert_bad_block(&l2block, &l2block_committed_info, &global_state)?;
+                            db.insert_bad_block(l2block, l2block_committed_info, &global_state)?;
                             log::info!("insert bad block 0x{}", hex::encode(l2block.hash()));
 
                             let global_block_root: H256 =
@@ -472,7 +474,7 @@ impl Chain {
                             Ok(SyncEvent::BadBlock { context })
                         }
                         None => {
-                            // process is successed
+                            // process is succeeded
                             self.local_state.tip = l2block.to_owned();
                             // insert block committed info if update is from layer1
                             if let UpdateAction::L1(L1Action {
@@ -527,7 +529,7 @@ impl Chain {
 
                         let generator = Arc::clone(&self.generator);
                         let context = Box::new(gw_challenge::context::build_verify_context(
-                            generator, db, &target,
+                            generator, db, target,
                         )?);
 
                         return Ok(SyncEvent::BadChallenge {
@@ -1001,7 +1003,8 @@ impl Chain {
                 && (is_revert_happend || self.complete_initial_syncing)
             {
                 // update mem pool state
-                smol::block_on(async { mem_pool.lock().await.notify_new_tip(tip_block_hash) })?;
+                let tip_block_number = self.local_state.tip.raw().number().unpack();
+                mem_pool.notify_new_tip((tip_block_hash, tip_block_number))?;
             }
         }
 

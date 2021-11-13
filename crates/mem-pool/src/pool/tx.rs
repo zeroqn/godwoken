@@ -42,6 +42,7 @@ pub fn verify_signature(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn apply(
     tx: &L2Transaction,
     state: &mut (impl State + StateExt + CodeStore),

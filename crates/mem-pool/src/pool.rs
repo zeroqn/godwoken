@@ -42,6 +42,7 @@ mod finalize;
 mod offchain_validator;
 mod tx;
 mod withdrawal;
+pub use batch::BatchError;
 
 #[derive(Debug)]
 pub struct OutputParam {
@@ -61,7 +62,7 @@ impl Default for OutputParam {
 }
 
 #[derive(Clone)]
-struct MemPoolStore {
+pub(crate) struct MemPoolStore {
     mem: Arc<MultiMemStore>,
     db: Store,
 }
@@ -83,7 +84,6 @@ impl MemPoolStore {
 /// FIXME: Mem Store commit and rollback, otherwise we will have inconsistent
 /// State.
 /// MemPool
-#[derive(Clone)]
 pub struct MemPool<P: MemPoolProvider> {
     store: MemPoolStore,
     /// Generator
@@ -94,6 +94,20 @@ pub struct MemPool<P: MemPoolProvider> {
     batch_handle: BatchHandle,
     finalize_handle: FinalizeHandle,
     config: MemPoolConfig,
+}
+
+impl<P: MemPoolProvider> Clone for MemPool<P> {
+    fn clone(&self) -> Self {
+        MemPool {
+            store: self.store.clone(),
+            generator: Arc::clone(&self.generator),
+            provider: Arc::clone(&self.provider),
+            tip_block_number: Arc::clone(&self.tip_block_number),
+            batch_handle: self.batch_handle.clone(),
+            finalize_handle: self.finalize_handle.clone(),
+            config: self.config.clone(),
+        }
+    }
 }
 
 impl<P: MemPoolProvider + 'static> MemPool<P> {
@@ -128,7 +142,7 @@ impl<P: MemPoolProvider + 'static> MemPool<P> {
         let finalize_handle = Finalize::build(
             store.clone(),
             generator.rollup_context().to_owned(),
-            tip.clone(),
+            tip,
             block_info,
         );
 
@@ -137,7 +151,7 @@ impl<P: MemPoolProvider + 'static> MemPool<P> {
             store.clone(),
             Arc::clone(&generator),
             Arc::clone(&provider),
-            tip.clone(),
+            tip,
             block_producer_config.account_id,
             opt_error_tx_handler,
             config.clone(),
@@ -161,21 +175,31 @@ impl<P: MemPoolProvider + 'static> MemPool<P> {
         db.mem_pool_state_tree(self.store.owned_mem())
     }
 
+    // FIXME: block info should always be available
+    pub fn block_info(&self) -> Option<BlockInfo> {
+        self.store.mem().get_block_info()
+    }
+
     // FIXME: should only one error type, which is channel is full
     pub fn notify_new_tip(&self, new_tip: (H256, u64)) -> Result<()> {
         self.tip_block_number.store(new_tip.1, Ordering::SeqCst);
-        self.batch_handle.try_new_tip(new_tip.0)?;
+        self.batch_handle.new_tip(new_tip.0)?;
+        Ok(())
+    }
+
+    pub fn reset(&self) -> Result<()> {
+        self.batch_handle.reset()?;
         Ok(())
     }
 
     pub fn try_push_transaction(&self, tx: L2Transaction) -> Result<()> {
-        self.batch_handle.try_push_tx(tx)?;
+        self.batch_handle.push_tx(tx)?;
 
         Ok(())
     }
 
     pub fn try_push_withdrawal(&self, withdrawal: WithdrawalRequest) -> Result<()> {
-        self.batch_handle.try_push_withdrawal(withdrawal)?;
+        self.batch_handle.push_withdrawal(withdrawal)?;
 
         Ok(())
     }
@@ -184,7 +208,7 @@ impl<P: MemPoolProvider + 'static> MemPool<P> {
         self.store.mem().get_tx_receipt(tx_hash)
     }
 
-    pub async fn output_mem_block(
+    pub fn output_mem_block(
         &self,
         param: OutputParam,
     ) -> Result<impl Future<Output = Result<(Option<CollectedCustodianCells>, BlockParam)>>> {
