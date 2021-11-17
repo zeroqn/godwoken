@@ -338,7 +338,6 @@ impl Finalize {
         &self,
         output_param: &OutputParam,
     ) -> Result<(MemBlock, AccountMerkleState)> {
-        let db = self.store.db().begin_transaction();
         let retry_count = output_param.retry_count;
 
         // first time package, return the whole mem block
@@ -348,8 +347,7 @@ impl Finalize {
             assert!(mem_block.touched_keys().is_empty(), "append before package");
             mem_block.append_touched_keys(self.vec_touched_keys.iter().flatten().cloned());
 
-            let state = self.in_mem_state_tree(&db)?;
-            return Ok((mem_block, state.merkle_state()?));
+            return Ok((mem_block, self.merkle_state.clone()));
         }
 
         // if first package failed, we should try to package less txs, deposits and withdrawals
