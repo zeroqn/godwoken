@@ -122,16 +122,9 @@ impl<P: MemPoolProvider + 'static> MemPool<P> {
         let tip_block = store.get_tip_block()?;
         let tip = (tip_block.hash().into(), tip_block.raw().number().unpack());
 
-        let estimated_timestamp = smol::block_on(provider.estimate_next_blocktime(None))?;
-        let block_info = {
-            let tip_number: u64 = tip_block.raw().number().unpack();
-            let number = tip_number + 1;
-            BlockInfo::new_builder()
-                .block_producer_id(block_producer_config.account_id.pack())
-                .timestamp((estimated_timestamp.as_millis() as u64).pack())
-                .number(number.pack())
-                .build()
-        };
+        let block_info = BlockInfo::new_builder()
+            .block_producer_id(block_producer_config.account_id.pack())
+            .build();
 
         let mem_store = Arc::new(MultiMemStore::new(
             block_info,
