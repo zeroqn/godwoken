@@ -217,8 +217,8 @@ impl Finalize {
         if let Some(deposits) = tip.deposits {
             self.finalize_deposits(deposits, &db)?;
         } else {
-            let check_point = { state.calculate_state_checkpoint()? };
-            self.mem_block.push_deposits(vec![], check_point);
+            let prev_txs_check_point = state.calculate_state_checkpoint()?;
+            self.mem_block.push_deposits(vec![], prev_txs_check_point);
         }
 
         if let Some(txs) = tip.txs {
