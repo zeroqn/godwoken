@@ -353,7 +353,7 @@ impl Finalize {
             let mut mem_block = self.mem_block.clone();
 
             if mem_block.txs_prev_state_checkpoint().is_none() {
-                // No deposits, since we do assertion on mem_block.push_deposits()
+                // No deposits, since we do assertion in mem_block.push_deposits()
                 let txs_prev_state = if mem_block.withdrawals().is_empty() {
                     // Use prev state merkle
                     mem_block.prev_merkle_state()
