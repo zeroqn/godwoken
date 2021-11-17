@@ -269,8 +269,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
             let total_batch_time = Instant::now();
             let db = self.store.db().begin_transaction();
             for req in batch.drain(..) {
-                self.check_and_process_tip_message(None, Some(&db));
-
+                // self.check_and_process_tip_message(None, Some(&db));
                 let req_hash = req.hash();
                 let req_kind = req.kind();
                 let is_tx = matches!(req, BatchPushMessage::Transaction(_));
