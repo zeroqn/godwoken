@@ -142,7 +142,7 @@ impl Finalize {
                 Err(_) if self.finalize_rx.is_closed() => {
                     unreachable!("[mem-pool finalize] channel shutdown");
                 }
-                Err(_) => (),
+                Err(_empty) => (), // Do nothing
             }
         }
     }
@@ -409,19 +409,21 @@ impl Finalize {
         let (touched_keys, prev_txs_state) =
             match (mem_block.withdrawals().is_empty(), deposits.is_empty()) {
                 (true, true) => {
-                    // no withdrawals and deposits, use parent block post state
+                    // No withdrawals and deposits, use parent block post state
                     (vec![], self.mem_block.prev_merkle_state())
                 }
                 (false, true) => {
-                    // no depoists, use withdrawals post state
+                    // No depoists, use withdrawals post state
                     let prev_txs_state_offset = withdrawals_len.saturating_sub(1);
                     (vec![], &self.mem_block_states[prev_txs_state_offset])
                 }
                 (true, false) | (false, false) => {
+                    // At least one deposit, use deposits post state
+                    let prev_txs_state_offset = (deposit_offset + deposits.len()).saturating_sub(1);
+
                     let touched_keys = self.vec_touched_keys
                         [deposit_offset..deposit_offset + deposits.len()]
                         .iter();
-                    let prev_txs_state_offset = (deposit_offset + deposits.len()).saturating_sub(1);
 
                     (
                         touched_keys.flatten().cloned().collect(),
@@ -429,6 +431,7 @@ impl Finalize {
                     )
                 }
             };
+
         let prev_state_checkpoint = {
             let root = prev_txs_state.merkle_root().unpack();
             let count = prev_txs_state.count().unpack();
@@ -437,8 +440,7 @@ impl Finalize {
         new_mem_block.push_deposits(deposits, prev_state_checkpoint);
         new_mem_block.append_touched_keys(touched_keys.into_iter());
 
-        let tx_offset =
-            (mem_block.withdrawals().len() + mem_block.deposits().len()).saturating_sub(1);
+        let tx_offset = mem_block.withdrawals().len() + mem_block.deposits().len();
         let tx_end = tx_offset + tx_hashes.len();
         for (tx_hash, tx_post_state) in
             tx_hashes.zip(self.mem_block_states[tx_offset..tx_end].iter())
