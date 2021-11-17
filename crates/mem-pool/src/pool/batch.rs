@@ -225,7 +225,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         let new_tip = FinalizeNewTip {
             block_hash: self.current_tip.0,
             block_number: self.current_tip.1,
-            block_info: self.store.mem().get_block_info().expect("batch block info"),
+            block_info: self.store.mem().get_block_info(),
             withdrawals: empty_none_or!(
                 self.batched.withdrawals,
                 FinalizeWithdrawals {
@@ -376,7 +376,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         let tip_block_hash = db.get_tip_block_hash()?;
         let chain_view = ChainView::new(db, tip_block_hash);
         let mem = self.store.mem();
-        let block_info = mem.get_block_info().expect("batch block info");
+        let block_info = mem.get_block_info();
 
         let run_result = self.batch_one_tx(&tx, &mut state, &chain_view, &block_info)?;
         let tx_hash: H256 = tx.hash().into();
@@ -478,14 +478,8 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         }
 
         // estimate next l2block timestamp
-        let previous_timestamp = Duration::from_millis(
-            self.store
-                .mem()
-                .get_block_info()
-                .unwrap()
-                .timestamp()
-                .unpack(),
-        );
+        let previous_timestamp =
+            Duration::from_millis(self.store.mem().get_block_info().timestamp().unpack());
         let estimated_timestamp = smol::block_on(
             self.provider
                 .read()
@@ -750,7 +744,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         let tip_block_hash = db.get_tip_block_hash()?;
         let chain_view = ChainView::new(db, tip_block_hash);
         let mem = self.store.mem();
-        let block_info = mem.get_block_info().expect("batch block info");
+        let block_info = mem.get_block_info();
 
         let mut batched = Vec::with_capacity(txs.len());
         for tx in txs {

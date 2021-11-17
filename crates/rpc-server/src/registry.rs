@@ -507,7 +507,7 @@ async fn execute_raw_l2transaction(
                 Some(pool) => pool,
                 None => return Err(mem_pool_is_disabled_err()),
             };
-            mem_pool.block_info().expect("mem pool block info")
+            mem_pool.block_info()
         }
     };
 

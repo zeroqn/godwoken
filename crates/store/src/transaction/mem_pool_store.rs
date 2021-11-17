@@ -38,7 +38,7 @@ type MerkleState = (H256, u32);
 // TODO: split read and write cache
 pub struct MultiMemStore {
     smt: MultiMemSMTStore,
-    block_info: RwLock<Option<packed::BlockInfo>>,
+    block_info: RwLock<packed::BlockInfo>,
     merkle_state: RwLock<MerkleState>,
     scripts: DashMap<H256, packed::Script>,
     data: DashMap<H256, Bytes>,
@@ -49,10 +49,10 @@ pub struct MultiMemStore {
 }
 
 impl MultiMemStore {
-    pub fn new(account_state: &AccountMerkleState) -> Self {
+    pub fn new(block_info: packed::BlockInfo, account_state: &AccountMerkleState) -> Self {
         Self {
             smt: MultiMemSMTStore::default(),
-            block_info: RwLock::new(None),
+            block_info: RwLock::new(block_info),
             merkle_state: RwLock::new((
                 account_state.merkle_root().unpack(),
                 account_state.count().unpack(),
@@ -66,12 +66,12 @@ impl MultiMemStore {
         }
     }
 
-    pub fn get_block_info(&self) -> Option<packed::BlockInfo> {
+    pub fn get_block_info(&self) -> packed::BlockInfo {
         self.block_info.read().unwrap().clone()
     }
 
     pub fn update_block_info(&self, block_info: packed::BlockInfo) {
-        *self.block_info.write().unwrap() = Some(block_info)
+        *self.block_info.write().unwrap() = block_info
     }
 
     pub fn reset(&self) {

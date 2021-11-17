@@ -122,12 +122,6 @@ impl<P: MemPoolProvider + 'static> MemPool<P> {
         let tip_block = store.get_tip_block()?;
         let tip = (tip_block.hash().into(), tip_block.raw().number().unpack());
 
-        let mem_store = Arc::new(MultiMemStore::new(&tip_block.raw().post_account()));
-        let store = MemPoolStore {
-            mem: mem_store,
-            db: store,
-        };
-
         let estimated_timestamp = smol::block_on(provider.estimate_next_blocktime(None))?;
         let block_info = {
             let tip_number: u64 = tip_block.raw().number().unpack();
@@ -139,11 +133,20 @@ impl<P: MemPoolProvider + 'static> MemPool<P> {
                 .build()
         };
 
+        let mem_store = Arc::new(MultiMemStore::new(
+            block_info,
+            &tip_block.raw().post_account(),
+        ));
+        let store = MemPoolStore {
+            mem: mem_store,
+            db: store,
+        };
+
         let finalize_handle = Finalize::build(
             store.clone(),
             generator.rollup_context().to_owned(),
             tip,
-            block_info,
+            store.mem().get_block_info(),
         );
 
         let provider = Arc::new(RwLock::new(provider));
@@ -175,8 +178,7 @@ impl<P: MemPoolProvider + 'static> MemPool<P> {
         db.mem_pool_state_tree(self.store.owned_mem())
     }
 
-    // FIXME: block info should always be available
-    pub fn block_info(&self) -> Option<BlockInfo> {
+    pub fn block_info(&self) -> BlockInfo {
         self.store.mem().get_block_info()
     }
 
