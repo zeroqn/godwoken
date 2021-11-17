@@ -1,6 +1,9 @@
 use anyhow::Result;
 use gw_challenge::offchain::{OffChainCancelChallengeValidator, VerifyTxCycles};
-use gw_store::{state::mem_state_db::MemStateContext, transaction::StoreTransaction};
+use gw_store::{
+    smt::mem_smt_store::MemStore, state::mem_state_db::MemStateContext,
+    transaction::StoreTransaction,
+};
 use gw_types::{
     offchain::RunResult,
     packed::{L2Transaction, WithdrawalRequest},
@@ -30,8 +33,11 @@ impl<'a> OffchainValidator<'a> {
     }
 
     pub fn verify_withdrawal(&mut self, request: WithdrawalRequest) -> Result<Option<u64>> {
+        let mut mem_store = MemStore::default();
         let smt_store = self.db.mem_pool_account_smt(self.store.owned_mem());
-        let mut mem_tree = self.db.in_mem_state_tree(smt_store, MemStateContext::Tip)?;
+        let mut mem_tree =
+            self.db
+                .in_mem_state_tree(smt_store, &mut mem_store, MemStateContext::Tip)?;
         self.validator
             .verify_withdrawal_request(self.db, &mut mem_tree, request)
     }
@@ -41,8 +47,11 @@ impl<'a> OffchainValidator<'a> {
         tx: L2Transaction,
         run_result: &RunResult,
     ) -> Result<Option<VerifyTxCycles>> {
+        let mut mem_store = MemStore::default();
         let smt_store = self.db.mem_pool_account_smt(self.store.owned_mem());
-        let mut mem_tree = self.db.in_mem_state_tree(smt_store, MemStateContext::Tip)?;
+        let mut mem_tree =
+            self.db
+                .in_mem_state_tree(smt_store, &mut mem_store, MemStateContext::Tip)?;
         self.validator
             .verify_transaction(self.db, &mut mem_tree, tx, run_result)
     }

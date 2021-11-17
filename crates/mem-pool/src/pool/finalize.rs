@@ -4,7 +4,10 @@ use anyhow::{anyhow, Context, Result};
 use gw_common::{merkle_utils::calculate_state_checkpoint, smt::SMT, state::State, H256};
 use gw_generator::traits::StateExt;
 use gw_store::{
-    smt::{mem_smt_store::MemSMTStore, smt_store::SMTStore},
+    smt::{
+        mem_smt_store::{MemSMTStore, MemStore},
+        smt_store::SMTStore,
+    },
     state::{
         mem_state_db::{MemStateContext, MemStateTree},
         state_db::StateContext,
@@ -51,20 +54,6 @@ pub enum FinalizeMessage {
     },
 }
 
-// TODO: Pass kv only then apply them, use smt update_all once.
-// TODO: Pass kv then we can remove rollup_context
-pub struct Finalize {
-    store: MemPoolStore,
-    rollup_context: RollupContext,
-    current_tip: (H256, u64),
-    mem_block: MemBlock,
-    merkle_state: AccountMerkleState, // Finalize state merkle root
-    // TODO: Refactor into MemBlock?
-    mem_block_states: Vec<AccountMerkleState>, // States for repackage
-    vec_touched_keys: Vec<Vec<H256>>,          // Touched keys for repackage
-    finalize_rx: Receiver<FinalizeMessage>,
-}
-
 #[derive(Clone)]
 pub struct FinalizeHandle {
     finalize_tx: Sender<FinalizeMessage>,
@@ -102,6 +91,21 @@ impl FinalizeHandle {
     }
 }
 
+// TODO: Pass kv only then apply them, use smt update_all once.
+// TODO: Pass kv then we can remove rollup_context
+pub struct Finalize {
+    store: MemPoolStore,
+    mem_store: MemStore,
+    rollup_context: RollupContext,
+    current_tip: (H256, u64),
+    mem_block: MemBlock,
+    merkle_state: AccountMerkleState, // Finalize state merkle root
+    // TODO: Refactor into MemBlock?
+    mem_block_states: Vec<AccountMerkleState>, // States for repackage
+    vec_touched_keys: Vec<Vec<H256>>,          // Touched keys for repackage
+    finalize_rx: Receiver<FinalizeMessage>,
+}
+
 impl Finalize {
     pub(super) fn build(
         store: MemPoolStore,
@@ -122,6 +126,7 @@ impl Finalize {
 
         let finalize = Finalize {
             store,
+            mem_store: Default::default(),
             rollup_context,
             current_tip,
             mem_block,
@@ -193,6 +198,7 @@ impl Finalize {
         };
         self.mem_block = MemBlock::new(tip.block_info, tip_block.raw().post_account());
         self.merkle_state = tip_block.raw().post_account();
+        self.mem_store = Default::default();
 
         self.mem_block_states.clear();
         self.mem_block_states.shrink_to_fit();
@@ -207,12 +213,12 @@ impl Finalize {
             self.finalize_withdrawals(withdrawal_hashes, finalized_custodians, &db)?;
         }
 
-        let state = self.in_mem_state_tree(&db)?;
+        let state = Self::in_mem_state_tree(&db, &mut self.mem_store, &self.merkle_state)?;
         if let Some(deposits) = tip.deposits {
             self.finalize_deposits(deposits, &db)?;
         } else {
-            self.mem_block
-                .push_deposits(vec![], state.calculate_state_checkpoint()?);
+            let check_point = { state.calculate_state_checkpoint()? };
+            self.mem_block.push_deposits(vec![], check_point);
         }
 
         if let Some(txs) = tip.txs {
@@ -223,19 +229,21 @@ impl Finalize {
     }
 
     fn in_mem_state_tree<'db>(
-        &self,
         db: &'db StoreTransaction,
+        mem_store: &'db mut MemStore,
+        merkle_state: &AccountMerkleState,
     ) -> Result<MemStateTree<'db, SMTStore<'db, StoreTransaction>>> {
         let smt_store = db.account_smt_store()?;
-        let mem_smt_store = MemSMTStore::new(smt_store);
-        let tree = SMT::new(self.merkle_state.merkle_root().unpack(), mem_smt_store);
+        let mem_smt_store = MemSMTStore::new(smt_store, mem_store);
+        let tree = SMT::new(merkle_state.merkle_root().unpack(), mem_smt_store);
 
         let state = MemStateTree::new(
             db,
             tree,
-            self.merkle_state.count().unpack(),
+            merkle_state.count().unpack(),
             MemStateContext::Tip,
         );
+
         Ok(state)
     }
 
@@ -468,7 +476,7 @@ impl Finalize {
         assert!(self.mem_block.txs().is_empty());
         log::info!("[mem-pool finalize] withdraals {}", withdrawals.len());
 
-        let mut state = self.in_mem_state_tree(db)?;
+        let mut state = Self::in_mem_state_tree(db, &mut self.mem_store, &self.merkle_state)?;
         // start track withdrawal
         state.tracker_mut().enable();
 
@@ -511,7 +519,7 @@ impl Finalize {
         assert!(self.mem_block.deposits().is_empty());
         log::info!("[mem-pool finalize] deposits {}", deposits.len());
 
-        let mut state = self.in_mem_state_tree(db)?;
+        let mut state = Self::in_mem_state_tree(db, &mut self.mem_store, &self.merkle_state)?;
         // start track withdrawal
         state.tracker_mut().enable();
 
@@ -552,7 +560,7 @@ impl Finalize {
         assert!(self.mem_block.txs_prev_state_checkpoint().is_some());
         log::info!("[mem-pool finalize] txs {}", txs.len());
 
-        let mut state = self.in_mem_state_tree(db)?;
+        let mut state = Self::in_mem_state_tree(db, &mut self.mem_store, &self.merkle_state)?;
         let mem_store = self.store.mem();
         let tx_run_results = txs.into_iter().map(|t| {
             let tx = {

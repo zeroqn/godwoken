@@ -18,26 +18,23 @@ enum Value<V> {
 }
 
 #[derive(Debug, Default)]
-struct MemStore {
+pub struct MemStore {
     branches: HashMap<BranchKey, Value<BranchNode>>,
     leaves: HashMap<H256, Value<H256>>,
 }
 
-pub struct MemSMTStore<S> {
+pub struct MemSMTStore<'s, S> {
     store: S,
-    mem_store: MemStore,
+    mem_store: &'s mut MemStore,
 }
 
-impl<S: Store<H256>> MemSMTStore<S> {
-    pub fn new(store: S) -> Self {
-        MemSMTStore {
-            store,
-            mem_store: Default::default(),
-        }
+impl<'s, S: Store<H256>> MemSMTStore<'s, S> {
+    pub fn new(store: S, mem_store: &'s mut MemStore) -> Self {
+        MemSMTStore { store, mem_store }
     }
 }
 
-impl<S: Store<H256>> Store<H256> for MemSMTStore<S> {
+impl<'s, S: Store<H256>> Store<H256> for MemSMTStore<'s, S> {
     fn get_branch(&self, branch_key: &BranchKey) -> Result<Option<BranchNode>, SMTError> {
         match self.mem_store.branches.get(branch_key) {
             Some(Value::Deleted) => Ok(None),

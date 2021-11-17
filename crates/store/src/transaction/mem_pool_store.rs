@@ -23,7 +23,7 @@ use super::StoreTransaction;
 use crate::{
     smt::{
         mem_pool_smt_store::{MemPoolSMTStore, MultiMemSMTStore},
-        mem_smt_store::MemSMTStore,
+        mem_smt_store::{MemSMTStore, MemStore},
         Columns,
     },
     state::{
@@ -167,15 +167,16 @@ impl MultiMemStore {
 
 impl StoreTransaction {
     /// Used for package new mem block
-    pub fn in_mem_state_tree<S: Store<H256>>(
-        &self,
+    pub fn in_mem_state_tree<'m, S: Store<H256>>(
+        &'m self,
         smt_store: S,
+        mem_store: &'m mut MemStore,
         context: MemStateContext,
-    ) -> Result<MemStateTree<S>, Error> {
+    ) -> Result<MemStateTree<'m, S>, Error> {
         let block = self.get_tip_block()?;
         let merkle_root = block.raw().post_account();
         let account_count = self.get_mem_block_account_count()?;
-        let mem_smt_store = MemSMTStore::new(smt_store);
+        let mem_smt_store = MemSMTStore::new(smt_store, mem_store);
         let tree = SMT::new(merkle_root.merkle_root().unpack(), mem_smt_store);
         Ok(MemStateTree::new(self, tree, account_count, context))
     }

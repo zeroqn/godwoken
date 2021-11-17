@@ -26,7 +26,7 @@ pub enum MemStateContext {
 /// MemStateTree
 /// This struct is used for calculate state in the memory
 pub struct MemStateTree<'a, S> {
-    tree: SMT<MemSMTStore<S>>,
+    tree: SMT<MemSMTStore<'a, S>>,
     db: &'a StoreTransaction,
     account_count: u32,
     context: MemStateContext,
@@ -39,7 +39,7 @@ pub struct MemStateTree<'a, S> {
 impl<'a, S: Store<H256>> MemStateTree<'a, S> {
     pub fn new(
         db: &'a StoreTransaction,
-        tree: SMT<MemSMTStore<S>>,
+        tree: SMT<MemSMTStore<'a, S>>,
         account_count: u32,
         context: MemStateContext,
     ) -> Self {
