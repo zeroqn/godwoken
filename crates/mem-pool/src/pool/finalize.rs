@@ -352,6 +352,28 @@ impl Finalize {
         if retry_count == 0 {
             let mut mem_block = self.mem_block.clone();
 
+            if mem_block.txs_prev_state_checkpoint().is_none() {
+                // No deposits, since we do assertion on mem_block.push_deposits()
+                let txs_prev_state = if mem_block.withdrawals().is_empty() {
+                    // Use prev state merkle
+                    mem_block.prev_merkle_state()
+                } else {
+                    // Use last withdrawal state
+                    let last_withdrawal = mem_block.withdrawals().len().saturating_sub(1);
+                    self.mem_block_states
+                        .get(last_withdrawal)
+                        .expect("last withdrawal state")
+                };
+
+                let txs_prev_state_checkpoint = {
+                    let root = txs_prev_state.merkle_root().unpack();
+                    let count = txs_prev_state.count().unpack();
+                    calculate_state_checkpoint(&root, count)
+                };
+
+                mem_block.push_deposits(vec![], txs_prev_state_checkpoint);
+            }
+
             assert!(mem_block.touched_keys().is_empty(), "append before package");
             mem_block.append_touched_keys(self.vec_touched_keys.iter().flatten().cloned());
 
