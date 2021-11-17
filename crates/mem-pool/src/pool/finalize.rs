@@ -160,8 +160,10 @@ impl Finalize {
                     log::error!("[mem-pool finalize] new tip err {}", err);
                 }
 
-                if let Err(err) = resp.try_send(result) {
-                    log::error!("[mem-pool finalize] response new tip err {}", err);
+                if !resp.is_closed() {
+                    if let Err(err) = resp.try_send(result) {
+                        log::error!("[mem-pool finalize] response new tip err {}", err);
+                    }
                 }
             }
             FinalizeMessage::FinalizeTxs { txs, resp } => {
@@ -171,8 +173,10 @@ impl Finalize {
                     log::error!("[mem-pool finalize] txs err {}", err);
                 }
 
-                if let Err(err) = resp.try_send(result) {
-                    log::error!("[mem-pool finalize] response finalize txs err {}", err);
+                if !resp.is_closed() {
+                    if let Err(err) = resp.try_send(result) {
+                        log::error!("[mem-pool finalize] response finalize txs err {}", err);
+                    }
                 }
             }
             FinalizeMessage::ProduceBlock { param, resp } => {
@@ -181,8 +185,10 @@ impl Finalize {
                     log::error!("[mem-pool finalize] produce block err {}", err);
                 }
 
-                if let Err(err) = resp.try_send(result) {
-                    log::error!("[mem-pool finalize] response produce block err {}", err);
+                if !resp.is_closed() {
+                    if let Err(err) = resp.try_send(result) {
+                        log::error!("[mem-pool finalize] response produce block err {}", err);
+                    }
                 }
             }
         }

@@ -592,10 +592,13 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         txs: TxIter,
         db: &StoreTransaction,
     ) -> Result<()> {
+        let withdrawals = withdrawals.collect::<Vec<_>>();
+        let txs = txs.collect::<Vec<_>>();
+
         // check order of inputs
         {
             let mut id_to_nonce: HashMap<u32, u32> = HashMap::default();
-            for tx in txs.clone() {
+            for tx in txs.iter() {
                 let id: u32 = tx.raw().from_id().unpack();
                 let nonce: u32 = tx.raw().nonce().unpack();
                 if let Some(&prev_nonce) = id_to_nonce.get(&id) {
@@ -611,11 +614,8 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
             }
         }
 
-        // query deposit cells
-        let task = self.provider.read().unwrap().collect_deposit_cells();
-
         // Handle state before txs withdrawal
-        let (batched, finalized_custodians) = self.batch_withdrawals(withdrawals.collect(), db)?;
+        let (batched, finalized_custodians) = self.batch_withdrawals(withdrawals, db)?;
         if !batched.is_empty() {
             self.batched.withdrawals.extend(batched.clone());
             self.batched.withdrawals_set.extend(batched);
@@ -624,6 +624,8 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
 
         // deposits
         let deposit_cells = {
+            // query deposit cells
+            let task = self.provider.read().unwrap().collect_deposit_cells();
             let cells = smol::block_on(task)?;
             crate::deposit::sanitize_deposit_cells(self.generator.rollup_context(), cells)
         };
@@ -631,7 +633,7 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
         self.batched.deposits.extend(batched);
 
         // re-inject txs
-        let batched = self.batch_txs(txs.collect(), db)?;
+        let batched = self.batch_txs(txs, db)?;
         self.batched.txs.extend(batched.clone());
         self.batched.txs_set.extend(batched);
 
