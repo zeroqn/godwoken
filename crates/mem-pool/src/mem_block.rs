@@ -32,10 +32,16 @@ pub struct MemBlock {
 
 impl MemBlock {
     pub fn new(block_info: BlockInfo, prev_merkle_state: AccountMerkleState) -> Self {
+        let txs_prev_state_checkpoint = {
+            let root = prev_merkle_state.merkle_root().unpack();
+            let count = prev_merkle_state.count().unpack();
+            Some(calculate_state_checkpoint(&root, count))
+        };
         MemBlock {
             block_producer_id: block_info.block_producer_id().unpack(),
             block_info,
             prev_merkle_state,
+            txs_prev_state_checkpoint,
             ..Default::default()
         }
     }
