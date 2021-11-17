@@ -165,15 +165,21 @@ impl<P: MemPoolProvider + 'static, H: MemPoolErrorTxHandler + 'static> Batch<P, 
 
     async fn in_background(mut self, batch_size: usize) {
         loop {
-            futures::select! {
-                maybe_tip_msg = self.tip_rx.recv().fuse() => {
-                    self.check_and_process_tip_message(maybe_tip_msg.ok(), None);
-                    continue;
+            loop {
+                if let Ok(tip_msg) = self.tip_rx.try_recv() {
+                    self.check_and_process_tip_message(Some(tip_msg), None)
                 }
-                maybe_push_msg = self.push_rx.recv().fuse() => {
-                    self.try_push(maybe_push_msg.ok(), batch_size);
+
+                if !self.push_rx.is_empty()
+                    && self.batched.txs.len().saturating_add(batch_size) <= MAX_MEM_BLOCK_TXS
+                {
+                    break;
                 }
-            };
+
+                smol::Timer::after(Duration::from_millis(300)).await;
+            }
+
+            self.try_push(None, batch_size);
         }
     }
 
