@@ -998,6 +998,7 @@ impl MemPool {
             kafka.commit_txs_list(txs_list)?;
 
             let list = smol::block_on(kafka.get_all_txs_list())?;
+            log::error!("kafka list {:?}", list.map(|l| l.count()));
             assert_eq!(list.map(|l| l.count()), Some(self.mem_block.txs().len()));
         }
 
