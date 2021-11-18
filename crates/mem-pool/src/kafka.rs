@@ -1,18 +1,11 @@
 use anyhow::{anyhow, bail, Result};
-use futures::future::{self, FutureExt};
-use futures::{StreamExt, TryStreamExt};
 use gw_types::packed::L2Transaction;
 use gw_types::prelude::Entity;
-use rdkafka::consumer::{CommitMode, Consumer, DefaultConsumerContext, StreamConsumer};
+use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer, DefaultConsumerContext};
 use rdkafka::error::KafkaError;
-use rdkafka::message::BorrowedMessage;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::types::RDKafkaErrorCode;
-use rdkafka::util::AsyncRuntime;
 use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
-
-use std::future::Future;
-use std::time::{Duration, Instant};
 
 const KAFKA_MESSAGE_TIMEOUT_MS: &str = "5000";
 const KAFKA_SESSION_TIMEOUT_MS: &str = "6000";
@@ -21,7 +14,7 @@ const KAFKA_MEM_POOL_TXS_TOPIC: &str = "godwoken-mem-pool-txs";
 
 pub struct Kafka {
     producer: FutureProducer,
-    consumer: StreamConsumer<DefaultConsumerContext, SmolRuntime>,
+    consumer: BaseConsumer<DefaultConsumerContext>,
 }
 
 impl Kafka {
@@ -31,7 +24,7 @@ impl Kafka {
             .set("message.timeout.ms", KAFKA_MESSAGE_TIMEOUT_MS)
             .create()?;
 
-        let consumer: StreamConsumer<_, SmolRuntime> = ClientConfig::new()
+        let consumer: BaseConsumer<_> = ClientConfig::new()
             .set("bootstrap.servers", brokers)
             .set("session.timeout.ms", KAFKA_SESSION_TIMEOUT_MS)
             .set("enable.auto.commit", "false") // Dont auto commit
@@ -57,12 +50,20 @@ impl Kafka {
         Ok(())
     }
 
-    pub async fn get_all_txs_list(&self) -> Result<Option<TopicPartitionList>> {
-        let msgs = self.get_all_tx_msgs().await?;
-
+    pub fn get_all_txs_list(&self) -> Result<Option<TopicPartitionList>> {
         let mut list = TopicPartitionList::new();
-        for msg in msgs {
-            list.add_partition_offset(msg.topic(), msg.partition(), Offset::Offset(msg.offset()))?;
+        for maybe_msg in self.consumer.iter() {
+            match maybe_msg {
+                Ok(msg) => list.add_partition_offset(
+                    msg.topic(),
+                    msg.partition(),
+                    Offset::Offset(msg.offset()),
+                )?,
+                Err(KafkaError::MessageConsumption(RDKafkaErrorCode::UnknownTopicOrPartition)) => {
+                    return Ok(None)
+                }
+                Err(err) => return Err(anyhow!(err.to_string())),
+            }
         }
 
         Ok(Some(list))
@@ -74,41 +75,24 @@ impl Kafka {
         Ok(())
     }
 
-    pub async fn get_all_txs(&mut self) -> Result<Vec<L2Transaction>> {
-        let tx_msgs = self.get_all_tx_msgs().await?.into_iter();
+    pub fn get_all_txs(&self) -> Result<Vec<L2Transaction>> {
+        let mut txs = Vec::new();
 
-        tx_msgs
-            .map(|msg| match msg.payload() {
-                Some(payload) => L2Transaction::from_slice(payload).map_err(anyhow::Error::from),
-                None => Err(anyhow!("unexpected kafka tx msg without payload")),
-            })
-            .collect()
-    }
-
-    async fn get_all_tx_msgs(&self) -> Result<Vec<BorrowedMessage<'_>>> {
-        match self.consumer.stream().try_collect().await {
-            Ok(msgs) => Ok(msgs),
-            Err(KafkaError::MessageConsumption(RDKafkaErrorCode::UnknownTopicOrPartition)) => {
-                Ok(vec![])
+        for maybe_msg in self.consumer.iter() {
+            match maybe_msg {
+                Ok(msg) => match msg.payload() {
+                    Some(payload) => {
+                        txs.push(L2Transaction::from_slice(payload).map_err(anyhow::Error::from)?)
+                    }
+                    None => return Err(anyhow!("unexpected kafka tx msg without payload")),
+                },
+                Err(KafkaError::MessageConsumption(RDKafkaErrorCode::UnknownTopicOrPartition)) => {
+                    return Ok(vec![])
+                }
+                Err(err) => return Err(anyhow!(err.to_string())),
             }
-            Err(err) => Err(err.into()),
         }
-    }
-}
 
-struct SmolRuntime;
-
-impl AsyncRuntime for SmolRuntime {
-    type Delay = future::Map<smol::Timer, fn(Instant)>;
-
-    fn spawn<T>(task: T)
-    where
-        T: Future<Output = ()> + Send + 'static,
-    {
-        smol::spawn(task).detach()
-    }
-
-    fn delay_for(duration: Duration) -> Self::Delay {
-        FutureExt::map(smol::Timer::after(duration), |_| ())
+        Ok(txs)
     }
 }
