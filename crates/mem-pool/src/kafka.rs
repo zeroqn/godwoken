@@ -69,7 +69,11 @@ impl Kafka {
             }
         }
 
-        Ok(Some(list))
+        if list.count() == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(list))
+        }
     }
 
     pub fn commit_txs_list(&self, list: TopicPartitionList) -> Result<()> {
