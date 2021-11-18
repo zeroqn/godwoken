@@ -13,6 +13,7 @@ use arc_swap::{
     access::{DynAccess, DynGuard},
     ArcSwap,
 };
+use futures::StreamExt;
 use gw_challenge::offchain::{
     OffChainCancelChallengeValidator, OffChainValidatorContext, RollBackSavePointError,
 };
@@ -36,6 +37,7 @@ use gw_types::{
     },
     prelude::{Entity, Pack, Unpack},
 };
+use rdkafka::Message;
 use std::{
     cmp::{max, min},
     collections::{HashMap, HashSet, VecDeque},
@@ -46,6 +48,7 @@ use std::{
 use crate::{
     constants::{MAX_MEM_BLOCK_TXS, MAX_MEM_BLOCK_WITHDRAWALS, MAX_TX_SIZE, MAX_WITHDRAWAL_SIZE},
     custodian::AvailableCustodians,
+    kafka::Kafka,
     mem_block::MemBlock,
     traits::{MemPoolErrorTxHandler, MemPoolProvider},
     types::EntryList,
@@ -217,6 +220,8 @@ pub struct MemPool {
     mem_block: MemBlock,
     /// Offchain cancel challenge validator
     offchain_validator: Option<OffChainCancelChallengeValidator>,
+    /// Kafka persistent queue
+    kafka: Option<Kafka>,
 }
 
 impl MemPool {
@@ -259,6 +264,12 @@ impl MemPool {
             )
         });
 
+        let kafka = config
+            .kafka_brokers
+            .as_ref()
+            .map(|brokers| Kafka::build(brokers))
+            .transpose()?;
+
         let mut mem_pool = MemPool {
             inner,
             store,
@@ -267,6 +278,7 @@ impl MemPool {
             pending,
             mem_block,
             offchain_validator,
+            kafka,
         };
 
         // set tip
@@ -340,8 +352,12 @@ impl MemPool {
         db.insert_mem_pool_transaction_receipt(&tx_hash, tx_receipt)?;
 
         // Add to pool
-        let account_id: u32 = tx.raw().from_id().unpack();
+        if let Some(kafka) = self.kafka.as_mut() {
+            kafka.send_tx(&tx)?;
+        }
         db.insert_mem_pool_transaction(&tx_hash, tx.clone())?;
+
+        let account_id: u32 = tx.raw().from_id().unpack();
         let entry_list = self.pending.entry(account_id).or_default();
         entry_list.txs.push(tx);
 

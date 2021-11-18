@@ -8,6 +8,7 @@ mod constants;
 pub mod custodian;
 pub mod default_provider;
 mod deposit;
+pub mod kafka;
 mod mem_block;
 pub mod pool;
 pub mod traits;
