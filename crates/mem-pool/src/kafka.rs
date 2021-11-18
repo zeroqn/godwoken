@@ -4,7 +4,10 @@ use futures::{StreamExt, TryStreamExt};
 use gw_types::packed::L2Transaction;
 use gw_types::prelude::Entity;
 use rdkafka::consumer::{CommitMode, Consumer, DefaultConsumerContext, StreamConsumer};
+use rdkafka::error::KafkaError;
+use rdkafka::message::BorrowedMessage;
 use rdkafka::producer::{FutureProducer, FutureRecord};
+use rdkafka::types::RDKafkaErrorCode;
 use rdkafka::util::AsyncRuntime;
 use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
 
@@ -55,11 +58,7 @@ impl Kafka {
     }
 
     pub async fn get_all_txs_list(&self) -> Result<Option<TopicPartitionList>> {
-        if self.is_topic_empty()? {
-            return Ok(None);
-        }
-
-        let msgs: Vec<_> = self.consumer.stream().try_collect().await?;
+        let msgs = self.get_all_tx_msgs().await?;
 
         let mut list = TopicPartitionList::new();
         for msg in msgs {
@@ -76,27 +75,24 @@ impl Kafka {
     }
 
     pub async fn get_all_txs(&mut self) -> Result<Vec<L2Transaction>> {
-        if self.is_topic_empty()? {
-            return Ok(vec![]);
-        }
+        let tx_msgs = self.get_all_tx_msgs().await?.into_iter();
 
-        let tx_stream = self.consumer.stream().map(|maybe_msg| match maybe_msg {
-            Ok(msg) => match msg.payload() {
+        tx_msgs
+            .map(|msg| match msg.payload() {
                 Some(payload) => L2Transaction::from_slice(payload).map_err(anyhow::Error::from),
                 None => Err(anyhow!("unexpected kafka tx msg without payload")),
-            },
-            Err(err) => Err(anyhow!(err.to_string())),
-        });
-
-        tx_stream.try_collect().await
+            })
+            .collect()
     }
 
-    fn is_topic_empty(&self) -> Result<bool> {
-        let position = self.consumer.position()?;
-
-        Ok(position
-            .elements_for_topic(KAFKA_MEM_POOL_TXS_TOPIC)
-            .is_empty())
+    async fn get_all_tx_msgs(&self) -> Result<Vec<BorrowedMessage<'_>>> {
+        match self.consumer.stream().try_collect().await {
+            Ok(msgs) => Ok(msgs),
+            Err(KafkaError::MessageConsumption(RDKafkaErrorCode::UnknownTopicOrPartition)) => {
+                Ok(vec![])
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 }
 
