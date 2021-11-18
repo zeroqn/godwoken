@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::{anyhow, bail, Result};
 use gw_types::packed::L2Transaction;
 use gw_types::prelude::Entity;
@@ -52,7 +54,13 @@ impl Kafka {
 
     pub fn get_all_txs_list(&self) -> Result<Option<TopicPartitionList>> {
         let mut list = TopicPartitionList::new();
-        for maybe_msg in self.consumer.iter() {
+
+        loop {
+            let maybe_msg = match self.consumer.poll(Duration::from_millis(100)) {
+                Some(msg) => msg,
+                None => break,
+            };
+
             match maybe_msg {
                 Ok(msg) => list.add_partition_offset(
                     msg.topic(),
@@ -78,7 +86,12 @@ impl Kafka {
     pub fn get_all_txs(&self) -> Result<Vec<L2Transaction>> {
         let mut txs = Vec::new();
 
-        for maybe_msg in self.consumer.iter() {
+        loop {
+            let maybe_msg = match self.consumer.poll(Duration::from_millis(100)) {
+                Some(msg) => msg,
+                None => break,
+            };
+
             match maybe_msg {
                 Ok(msg) => match msg.payload() {
                     Some(payload) => {
