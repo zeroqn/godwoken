@@ -1,10 +1,9 @@
 use anyhow::{anyhow, bail, Result};
 use futures::future::{self, FutureExt};
-use futures::{Stream, StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt};
 use gw_types::packed::L2Transaction;
 use gw_types::prelude::Entity;
 use rdkafka::consumer::{CommitMode, Consumer, DefaultConsumerContext, StreamConsumer};
-use rdkafka::message::BorrowedMessage;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::AsyncRuntime;
 use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
@@ -55,15 +54,19 @@ impl Kafka {
         Ok(())
     }
 
-    pub async fn get_all_txs_list(&self) -> Result<TopicPartitionList> {
-        let msgs: Vec<_> = self.tx_msg_stream().try_collect().await?;
+    pub async fn get_all_txs_list(&self) -> Result<Option<TopicPartitionList>> {
+        if self.is_topic_empty()? {
+            return Ok(None);
+        }
+
+        let msgs: Vec<_> = self.consumer.stream().try_collect().await?;
 
         let mut list = TopicPartitionList::new();
         for msg in msgs {
             list.add_partition_offset(msg.topic(), msg.partition(), Offset::Offset(msg.offset()))?;
         }
 
-        Ok(list)
+        Ok(Some(list))
     }
 
     pub fn commit_txs_list(&self, list: TopicPartitionList) -> Result<()> {
@@ -73,7 +76,11 @@ impl Kafka {
     }
 
     pub async fn get_all_txs(&mut self) -> Result<Vec<L2Transaction>> {
-        let tx_stream = self.tx_msg_stream().map(|maybe_msg| match maybe_msg {
+        if self.is_topic_empty()? {
+            return Ok(vec![]);
+        }
+
+        let tx_stream = self.consumer.stream().map(|maybe_msg| match maybe_msg {
             Ok(msg) => match msg.payload() {
                 Some(payload) => L2Transaction::from_slice(payload).map_err(anyhow::Error::from),
                 None => Err(anyhow!("unexpected kafka tx msg without payload")),
@@ -84,8 +91,12 @@ impl Kafka {
         tx_stream.try_collect().await
     }
 
-    fn tx_msg_stream(&self) -> impl Stream<Item = Result<BorrowedMessage<'_>>> {
-        TryStreamExt::map_err(self.consumer.stream(), |err| anyhow!(err.to_string()))
+    fn is_topic_empty(&self) -> Result<bool> {
+        let position = self.consumer.position()?;
+
+        Ok(position
+            .elements_for_topic(KAFKA_MEM_POOL_TXS_TOPIC)
+            .is_empty())
     }
 }
 

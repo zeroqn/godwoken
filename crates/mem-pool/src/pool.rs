@@ -978,6 +978,7 @@ impl MemPool {
             let k = self.kafka.as_ref();
             k.map(|k| smol::block_on(k.get_all_txs_list()))
                 .transpose()?
+                .flatten()
         };
 
         for tx in txs {
@@ -997,7 +998,7 @@ impl MemPool {
             kafka.commit_txs_list(txs_list)?;
 
             let list = smol::block_on(kafka.get_all_txs_list())?;
-            assert_eq!(list.count(), self.mem_block.txs().len());
+            assert_eq!(list.map(|l| l.count()), Some(self.mem_block.txs().len()));
         }
 
         Ok(())
