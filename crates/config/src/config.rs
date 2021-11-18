@@ -188,6 +188,7 @@ pub struct MemPoolConfig {
     pub submit_l2tx_max_cycles: u64,
     pub max_batch_channel_buffer_size: usize,
     pub max_batch_tx_withdrawal_size: usize,
+    pub kafka_brokers: Option<String>, // Brokers list in kafka format
 }
 
 impl Default for MemPoolConfig {
@@ -197,6 +198,7 @@ impl Default for MemPoolConfig {
             submit_l2tx_max_cycles: 70_000_000,
             max_batch_channel_buffer_size: 5000,
             max_batch_tx_withdrawal_size: 500,
+            kafka_brokers: None,
         }
     }
 }

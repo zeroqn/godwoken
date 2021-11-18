@@ -16,10 +16,12 @@ gw-traits = { path = "../traits" }
 gw-rpc-client = { path = "../rpc-client" }
 gw-poa = { path = "../poa" }
 gw-config = { path = "../config" }
-smol = "1.2.5"
+smol = "1.2"
 anyhow = "1.0"
 log = "0.4"
 hex = "0.4"
 faster-hex = "0.4"
 thiserror = "1.0"
 arc-swap = "1.4"
+futures = "0.3"
+rdkafka = "0.27"
