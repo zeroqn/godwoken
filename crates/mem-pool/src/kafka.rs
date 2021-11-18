@@ -73,7 +73,7 @@ impl Kafka {
     }
 
     pub fn commit_txs_list(&self, list: TopicPartitionList) -> Result<()> {
-        self.consumer.commit(&list, CommitMode::Async)?;
+        self.consumer.commit(&list, CommitMode::Sync)?;
 
         Ok(())
     }
