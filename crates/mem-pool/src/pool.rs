@@ -995,9 +995,10 @@ impl MemPool {
             let kafka = self.kafka.as_ref().expect("kafka enabled");
             kafka.commit_txs_list(txs_list)?;
 
-            let list = kafka.get_all_txs_list()?;
-            log::error!("kafka list {:?}", list.as_ref().map(|l| l.count()));
-            assert_eq!(list.map(|l| l.count()), Some(self.mem_block.txs().len()));
+            if let Some(list) = kafka.get_all_txs_list()? {
+                log::error!("kafka list {:?}", list.count());
+                assert_eq!(list.count(), self.mem_block.txs().len());
+            }
         }
 
         Ok(())
