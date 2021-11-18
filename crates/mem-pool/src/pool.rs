@@ -976,9 +976,7 @@ impl MemPool {
         // Fetch all txs offsets in kafka
         let opt_txs_list = {
             let k = self.kafka.as_ref();
-            k.map(|k| smol::block_on(k.get_all_txs_list()))
-                .transpose()?
-                .flatten()
+            k.map(|k| k.get_all_txs_list()).transpose()?.flatten()
         };
 
         for tx in txs {
@@ -997,7 +995,7 @@ impl MemPool {
             let kafka = self.kafka.as_ref().expect("kafka enabled");
             kafka.commit_txs_list(txs_list)?;
 
-            let list = smol::block_on(kafka.get_all_txs_list())?;
+            let list = kafka.get_all_txs_list()?;
             log::error!("kafka list {:?}", list.as_ref().map(|l| l.count()));
             assert_eq!(list.map(|l| l.count()), Some(self.mem_block.txs().len()));
         }
