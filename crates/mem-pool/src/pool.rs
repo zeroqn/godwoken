@@ -13,7 +13,6 @@ use arc_swap::{
     access::{DynAccess, DynGuard},
     ArcSwap,
 };
-use futures::StreamExt;
 use gw_challenge::offchain::{
     OffChainCancelChallengeValidator, OffChainValidatorContext, RollBackSavePointError,
 };
@@ -37,7 +36,6 @@ use gw_types::{
     },
     prelude::{Entity, Pack, Unpack},
 };
-use rdkafka::Message;
 use std::{
     cmp::{max, min},
     collections::{HashMap, HashSet, VecDeque},
@@ -973,7 +971,15 @@ impl MemPool {
             crate::deposit::sanitize_deposit_cells(self.generator.rollup_context(), cells)
         };
         self.finalize_deposits(db, deposit_cells)?;
+
         // re-inject txs
+        // Fetch all txs offsets in kafka
+        let opt_txs_list = {
+            let k = self.kafka.as_ref();
+            k.map(|k| smol::block_on(k.get_all_txs_list()))
+                .transpose()?
+        };
+
         for tx in txs {
             if let Err(err) = self.push_transaction_with_db(db, tx.clone()) {
                 let tx_hash = tx.hash();
@@ -981,8 +987,17 @@ impl MemPool {
                     "[mem pool] fail to re-inject tx {}, error: {}",
                     hex::encode(&tx_hash),
                     err
-                );
+                )
             }
+        }
+
+        // Commit previous saved txs in kafka
+        if let Some(txs_list) = opt_txs_list {
+            let kafka = self.kafka.as_ref().expect("kafka enabled");
+            kafka.commit_txs_list(txs_list)?;
+
+            let list = smol::block_on(kafka.get_all_txs_list())?;
+            assert_eq!(list.count(), self.mem_block.txs().len());
         }
 
         Ok(())

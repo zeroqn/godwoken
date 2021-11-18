@@ -1,14 +1,13 @@
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use futures::future::{self, FutureExt};
-use futures::Stream;
+use futures::{Stream, StreamExt, TryStreamExt};
 use gw_types::packed::L2Transaction;
 use gw_types::prelude::Entity;
-use rdkafka::consumer::{Consumer, DefaultConsumerContext, StreamConsumer};
-use rdkafka::error::KafkaError;
+use rdkafka::consumer::{CommitMode, Consumer, DefaultConsumerContext, StreamConsumer};
 use rdkafka::message::BorrowedMessage;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::AsyncRuntime;
-use rdkafka::ClientConfig;
+use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
 
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -33,7 +32,7 @@ impl Kafka {
         let consumer: StreamConsumer<_, SmolRuntime> = ClientConfig::new()
             .set("bootstrap.servers", brokers)
             .set("session.timeout.ms", KAFKA_SESSION_TIMEOUT_MS)
-            .set("enable.auto.commit", "true")
+            .set("enable.auto.commit", "false") // Dont auto commit
             .set("auto.offset.reset", "earliest")
             .set("group.id", KAFKA_MEM_POOL_GROUP_ID)
             .create()?;
@@ -56,8 +55,37 @@ impl Kafka {
         Ok(())
     }
 
-    pub fn tx_stream(&mut self) -> impl Stream<Item = Result<BorrowedMessage<'_>, KafkaError>> {
-        self.consumer.stream()
+    pub async fn get_all_txs_list(&self) -> Result<TopicPartitionList> {
+        let msgs: Vec<_> = self.tx_msg_stream().try_collect().await?;
+
+        let mut list = TopicPartitionList::new();
+        for msg in msgs {
+            list.add_partition_offset(msg.topic(), msg.partition(), Offset::Offset(msg.offset()))?;
+        }
+
+        Ok(list)
+    }
+
+    pub fn commit_txs_list(&self, list: TopicPartitionList) -> Result<()> {
+        self.consumer.commit(&list, CommitMode::Async)?;
+
+        Ok(())
+    }
+
+    pub async fn get_all_txs(&mut self) -> Result<Vec<L2Transaction>> {
+        let tx_stream = self.tx_msg_stream().map(|maybe_msg| match maybe_msg {
+            Ok(msg) => match msg.payload() {
+                Some(payload) => L2Transaction::from_slice(payload).map_err(anyhow::Error::from),
+                None => Err(anyhow!("unexpected kafka tx msg without payload")),
+            },
+            Err(err) => Err(anyhow!(err.to_string())),
+        });
+
+        tx_stream.try_collect().await
+    }
+
+    fn tx_msg_stream(&self) -> impl Stream<Item = Result<BorrowedMessage<'_>>> {
+        TryStreamExt::map_err(self.consumer.stream(), |err| anyhow!(err.to_string()))
     }
 }
 
