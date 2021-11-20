@@ -214,6 +214,7 @@ impl Registry {
                 }
                 RPCMethods::Test => {
                     server = server.with_method("gw_dump_mem_block", dump_mem_block);
+                    server = server.with_method("gw_do_panic", do_panic);
                 }
             }
         }
@@ -954,4 +955,8 @@ async fn dump_mem_block(mem_pool_batch: Data<Option<MemPoolBatch>>) -> Result<Js
     let mem_block = mem_pool_batch.dump_mem_block()?.await?;
 
     Ok(JsonBytes::from_bytes(mem_block.as_bytes()))
+}
+
+async fn do_panic() -> Result<()> {
+    panic!("test panic");
 }
