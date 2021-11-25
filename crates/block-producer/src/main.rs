@@ -1,3 +1,10 @@
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 use anyhow::{Context, Result};
 use clap::{App, Arg, SubCommand};
 use gw_block_producer::{db_block_validator, runner};
