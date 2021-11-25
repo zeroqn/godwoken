@@ -1045,13 +1045,16 @@ async fn dump_jemalloc_profiling() -> Result<()> {
     let opt_c_name = std::ffi::CString::new(opt_name).unwrap();
     log::info!("jemalloc profiling dump: {}", filename);
     unsafe {
-        jemalloc_sys::mallctl(
+        let ret = jemalloc_sys::mallctl(
             opt_c_name.as_ptr(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             &mut filename0 as *mut _ as *mut _,
             std::mem::size_of::<*mut std::ffi::c_void>(),
         );
+        if ret != 0 {
+            log::error!("dump failure {:?}", errno::Errno(ret));
+        }
     }
 
     Ok(())
