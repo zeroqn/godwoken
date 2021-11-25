@@ -26,6 +26,8 @@ impl EntryList {
             }
             removed.push(self.txs.remove(0));
         }
+
+        self.txs.shrink_to_fit();
         removed
     }
 
@@ -56,6 +58,7 @@ impl EntryList {
             }
         }
 
+        self.withdrawals.shrink_to_fit();
         removed
     }
 }

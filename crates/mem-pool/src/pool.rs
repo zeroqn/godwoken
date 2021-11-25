@@ -964,6 +964,7 @@ impl MemPool {
         for account_id in remove_list {
             self.pending.remove(&account_id);
         }
+        self.pending.shrink_to_fit();
         Ok(())
     }
 
