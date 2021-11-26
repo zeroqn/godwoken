@@ -1038,7 +1038,7 @@ async fn dump_jemalloc_profiling() -> Result<()> {
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let filename = format!("godwoken-jeprof.{}.heap", timestamp);
+    let filename = format!("godwoken-jeprof-{}-heap", timestamp);
 
     let mut filename0 = format!("{}\0", filename);
     let opt_name = "prof.dump";

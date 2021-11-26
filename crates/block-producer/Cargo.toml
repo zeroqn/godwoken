@@ -53,4 +53,4 @@ hex = "0.4"
 async-trait = "0.1"
 semver = "1.0"
 rayon = "1.5"
-tikv-jemallocator = { version = "0.4.0", features = ["unprefixed_malloc_on_supported_platforms"] }
+tikv-jemallocator = { version = "0.4.0", features = ["unprefixed_malloc_on_supported_platforms", "profiling"] }
