@@ -260,7 +260,10 @@ impl BlockProducer {
             }
         }
 
+        use rand::prelude::*;
         let mut retry_count = 0;
+        retry_count = random::<usize>() % 3usize;
+        log::info!("rand retry count {}", retry_count);
         while retry_count <= MAX_BLOCK_OUTPUT_PARAM_RETRY_COUNT {
             // get txs & withdrawal requests from mem pool
             let (opt_finalized_custodians, block_param) = {

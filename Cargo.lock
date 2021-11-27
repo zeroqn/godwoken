@@ -1938,6 +1938,7 @@ dependencies = [
  "hex",
  "lazy_static",
  "log",
+ "rand 0.8.2",
  "rayon",
  "semver 1.0.3",
  "serde",
