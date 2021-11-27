@@ -19,7 +19,10 @@ use gw_common::{
 };
 use gw_config::MemPoolConfig;
 use gw_generator::{
-    constants::L2TX_MAX_CYCLES, error::TransactionError, traits::StateExt, Generator,
+    constants::L2TX_MAX_CYCLES,
+    error::{TransactionError, TransactionValidateError},
+    traits::StateExt,
+    Generator,
 };
 use gw_store::{
     chain_view::ChainView,
@@ -225,7 +228,24 @@ impl MemPool {
         let state_db = self.fetch_state_db(db)?;
         let state = state_db.state_tree()?;
         // verify transaction
-        self.generator.verify_transaction(&state, tx)?;
+        if let Err(err) = self.generator.verify_transaction(&state, tx) {
+            let tx_err = match err {
+                TransactionValidateError::Transaction(err) => err,
+                _ => return Err(err.into()),
+            };
+
+            match tx_err {
+                TransactionError::Nonce {
+                    expected,
+                    actual,
+                    account_id,
+                } if expected < actual => {
+                    panic!("catch transaction re-inject failure because of account {} expected {} is smaller than actual {}", account_id, expected, actual);
+                }
+                _ => return Err(TransactionValidateError::Transaction(tx_err).into()),
+            }
+        };
+
         // verify signature
         self.generator.check_transaction_signature(&state, tx)?;
 
