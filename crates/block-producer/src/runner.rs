@@ -718,17 +718,6 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
         chain_task.cancel().await;
     });
 
-    if let Some(mem_pool) = mem_pool.as_ref() {
-        smol::block_on(async move {
-            let mem_pool = mem_pool.lock().await;
-            log::info!("Save mem block to {:?}", mem_pool.restore_manager().path());
-            if let Err(err) = mem_pool.save_mem_block() {
-                log::error!("save mem block error {}", err);
-            }
-            mem_pool.restore_manager().delete_before_one_hour();
-        });
-    }
-
     Ok(())
 }
 
