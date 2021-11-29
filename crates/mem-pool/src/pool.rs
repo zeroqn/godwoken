@@ -222,6 +222,16 @@ pub struct MemPool {
     restore_manager: RestoreManager,
 }
 
+impl Drop for MemPool {
+    fn drop(&mut self) {
+        log::info!("Save mem block to {:?}", self.restore_manager().path());
+        if let Err(err) = self.save_mem_block() {
+            log::error!("save mem block error {}", err);
+        }
+        self.restore_manager().delete_before_one_hour();
+    }
+}
+
 impl MemPool {
     pub fn create(
         block_producer_id: u32,

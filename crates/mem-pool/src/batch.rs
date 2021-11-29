@@ -121,17 +121,6 @@ struct BatchTxWithdrawalInBackground {
     batch_size: usize,
 }
 
-impl Drop for BatchTxWithdrawalInBackground {
-    fn drop(&mut self) {
-        let mem_pool = smol::block_on(self.mem_pool.lock());
-        log::info!("Save mem block to {:?}", mem_pool.restore_manager().path());
-        if let Err(err) = mem_pool.save_mem_block() {
-            log::error!("save mem block error {}", err);
-        }
-        mem_pool.restore_manager().delete_before_one_hour();
-    }
-}
-
 // TODO: tx priority than withdrawal
 impl BatchTxWithdrawalInBackground {
     fn new(
