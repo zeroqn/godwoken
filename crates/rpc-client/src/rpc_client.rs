@@ -1280,4 +1280,72 @@ impl RPCClient {
         let epoch_number: u64 = rfc_info.epoch_number.map(Into::into).unwrap_or(u64::MAX);
         Ok(epoch_number)
     }
+
+    pub async fn get_sudt_balance(&self, l1_sudt_type: Script, owner_lock: Script) -> Result<u128> {
+        let parse_sudt_amount = |cell: &Cell| -> Result<u128> {
+            if cell.output.type_.is_none() {
+                return Err(anyhow!("no a sudt cell"));
+            }
+
+            gw_types::packed::Uint128::from_slice(cell.output_data.as_bytes())
+                .map(|a| a.unpack())
+                .map_err(|e| anyhow!("invalid sudt amount {}", e))
+        };
+
+        let search_key = SearchKey {
+            script: ckb_types::packed::Script::new_unchecked(owner_lock.as_bytes()).into(),
+            script_type: ScriptType::Lock,
+            filter: Some(SearchKeyFilter {
+                script: Some(
+                    ckb_types::packed::Script::new_unchecked(l1_sudt_type.as_bytes()).into(),
+                ),
+                output_data_len_range: None,
+                output_capacity_range: None,
+                block_range: None,
+            }),
+        };
+        let order = Order::Desc;
+        let limit = Uint32::from(DEFAULT_QUERY_LIMIT as u32);
+
+        let mut balance = 0u128;
+        let mut cursor = None;
+        loop {
+            let cells: Pagination<Cell> = to_result(
+                self.indexer
+                    .client()
+                    .request(
+                        "get_cells",
+                        Some(ClientParams::Array(vec![
+                            json!(search_key),
+                            json!(order),
+                            json!(limit),
+                            json!(cursor),
+                        ])),
+                    )
+                    .await?,
+            )?;
+
+            if cells.last_cursor.is_empty() {
+                return Ok(balance);
+            }
+            cursor = Some(cells.last_cursor);
+
+            for cell in cells.objects.into_iter() {
+                match cell.output.type_.clone() {
+                    Some(json_script) => {
+                        let script = ckb_types::packed::Script::from(json_script);
+                        Script::new_unchecked(script.as_bytes())
+                    }
+                    None => continue,
+                };
+
+                let sudt_amount = match parse_sudt_amount(&cell) {
+                    Ok(amount) => amount,
+                    Err(_) => continue,
+                };
+
+                balance = balance.saturating_add(sudt_amount);
+            }
+        }
+    }
 }
