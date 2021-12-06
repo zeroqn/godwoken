@@ -171,6 +171,7 @@ impl ReplayBlock {
             .ok_or_else(|| anyhow!("block not found"))?;
 
         Self::replay_with(&db, &self.generator, &block, Some(tx_idx))
+            .map(|state| state.expect("tx state"))
     }
 
     pub fn replay_with(
@@ -178,7 +179,7 @@ impl ReplayBlock {
         generator: &Generator,
         block: &L2Block,
         tar_tx_idx: Option<u32>,
-    ) -> Result<ReplayState, ReplayError> {
+    ) -> Result<Option<ReplayState>, ReplayError> {
         let raw_block = block.raw();
         let block_info = get_block_info(&raw_block);
         let block_number = raw_block.number().unpack();
@@ -330,7 +331,7 @@ impl ReplayBlock {
                         .collect(),
                 };
 
-                return Ok(replay_state);
+                return Ok(Some(replay_state));
             }
 
             state.apply_run_result(&run_result)?;
@@ -351,7 +352,7 @@ impl ReplayBlock {
             }
         }
 
-        Ok(())
+        Ok(None)
     }
 }
 
