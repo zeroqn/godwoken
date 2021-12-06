@@ -102,7 +102,7 @@ pub fn check_block_through_l1(
         let ckb_client = HttpClient::new(config.rpc_client.ckb_url.to_owned())?;
         RPCClient::new(
             rollup_type_script.clone(),
-            base.rollup_context,
+            base.rollup_context.clone(),
             ckb_client,
             indexer_client,
         )
