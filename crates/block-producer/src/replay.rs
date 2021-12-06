@@ -204,6 +204,12 @@ pub async fn check_block_through_l1(
                     let block_number: u64 = l2block.raw().number().unpack();
                     let block_hash = ckb_types::H256(l2block.hash());
                     log::info!("found l2block {} hash {}", block_number, block_hash);
+
+                    let reverted_block_smt = db.reverted_block_smt()?;
+                    let reverted_check = reverted_block_smt.get(&l2block.hash().into())?;
+                    if reverted_check != H256::zero() {
+                        log::info!("l2block {} hash {} is reverted", block_number, block_hash);
+                    }
                 }
                 _ => bail!("unexpected rollup action {:?}", rollup_action),
             };
