@@ -189,19 +189,7 @@ fn run_cli() -> Result<()> {
             let config = read_config(&config_path)?;
             let from_block: Option<u64> = m.value_of(ARG_FROM_BLOCK).map(str::parse).transpose()?;
             let dst_store = m.value_of("dst-store").unwrap();
-            if let Err(ReplayError::State(state)) = replay_chain(&config, dst_store, from_block) {
-                let json_state = serde_json::to_string_pretty(&state)?;
-                let dir = config.debug.debug_tx_dump_path.as_path();
-                create_dir_all(&dir)?;
-
-                let mut dump_path = PathBuf::new();
-                dump_path.push(dir);
-
-                let dump_filename = format!("{}-{}-state.json", state.block_number, state.tx_hash);
-                dump_path.push(dump_filename);
-
-                write(dump_path, json_state)?;
-            }
+            replay_chain(&config, dst_store, from_block)?;
         }
         _ => {
             // default command: start a Godwoken node

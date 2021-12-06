@@ -56,7 +56,7 @@ pub fn replay_chain(
     config: &Config,
     dst_store: impl AsRef<Path>,
     from_block: Option<u64>,
-) -> Result<(), ReplayError> {
+) -> Result<()> {
     if config.store.path.as_os_str().is_empty() {
         return Err(anyhow!("empty store path, no db block to verify").into());
     }
@@ -312,7 +312,7 @@ struct ReplayChain {
 }
 
 impl ReplayChain {
-    pub fn replay(&mut self, from_block_number: u64) -> Result<(), ReplayError> {
+    pub fn replay(&mut self, from_block_number: u64) -> Result<()> {
         let src_db = self.src_chain.store().begin_transaction();
         let src_tip_block = src_db.get_tip_block().with_context(|| "src tip block")?;
         let src_tip_block_number = src_tip_block.raw().number().unpack();
