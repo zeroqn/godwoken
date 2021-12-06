@@ -489,6 +489,7 @@ async fn find_l2block_on_l1(
         From::<[u8; 32]>::from(committed_info.transaction_hash().unpack());
     let tx_status = rpc_client.get_transaction_status(tx_hash).await?;
     if !matches!(tx_status, Some(TxStatus::Committed)) {
+        log::error!("l1 block tx status {:?}", tx_status);
         return Ok(false);
     }
 
