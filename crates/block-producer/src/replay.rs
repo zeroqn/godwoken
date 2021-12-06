@@ -266,6 +266,14 @@ impl ReplayBlock {
             .prev_state_checkpoint()
             .unpack();
         if block_prev_txs_state_checkpoint != expected_prev_txs_state_checkpoint {
+            log::error!(
+                "block prev txs checkpoint {}",
+                ckb_types::H256(block_prev_txs_state_checkpoint.into())
+            );
+            log::error!(
+                "replay prev txs checkpoint {}",
+                ckb_types::H256(expected_prev_txs_state_checkpoint.into())
+            );
             return Err(anyhow!("prev txs state checkpoint not match").into());
         }
 
