@@ -1,4 +1,5 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use async_jsonrpc_client::{HttpClient, Params as ClientParams, Transport};
 use ckb_types::prelude::{Builder, Entity};
 use gw_chain::chain::Chain;
 use gw_common::merkle_utils::calculate_state_checkpoint;
@@ -11,19 +12,25 @@ use gw_generator::constants::L2TX_MAX_CYCLES;
 use gw_generator::genesis::init_genesis;
 use gw_generator::traits::StateExt;
 use gw_generator::Generator;
+use gw_jsonrpc_types::ckb_jsonrpc_types::{BlockNumber, Uint32};
+use gw_rpc_client::indexer_types::{Order, Pagination, ScriptType, SearchKey, SearchKeyFilter, Tx};
+use gw_rpc_client::rpc_client::RPCClient;
 use gw_store::chain_view::ChainView;
 use gw_store::state_db::{CheckPoint, StateDBMode, StateDBTransaction, SubState, WriteContext};
 use gw_store::transaction::StoreTransaction;
 use gw_store::Store;
-use gw_types::packed::{BlockInfo, L2Block, RawL2Block};
+use gw_types::offchain::TxStatus;
+use gw_types::packed::{BlockInfo, L2Block, L2BlockCommittedInfo, RawL2Block};
 use gw_types::prelude::Unpack;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use crate::runner::BaseInitComponents;
+use crate::utils::to_result;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReplayState {
@@ -50,6 +57,8 @@ pub fn replay_block(config: &Config, block_number: u64) -> Result<(), ReplayErro
     };
     log::info!("init complete");
 
+    check_block_through_l1(config, block_number)?;
+
     replay.replay(block_number)
 }
 
@@ -70,6 +79,96 @@ pub fn replay_block_tx(
     log::info!("init complete");
 
     replay.replay_block_tx(block_number, tx_index)
+}
+
+pub fn check_block_through_l1(config: &Config, block_number: u64) -> Result<()> {
+    if config.store.path.as_os_str().is_empty() {
+        return Err(anyhow!("empty store path, no db block to verify").into());
+    }
+
+    let base = BaseInitComponents::init(config, true)?;
+    log::info!("init complete");
+
+    let db = base.store.begin_transaction();
+    let block_hash = db.get_block_hash_by_number(block_number)?.unwrap();
+    let block = db.get_block(&block_hash)?.unwrap();
+    let block_committed_info = db.get_l2block_committed_info(&block_hash)?.unwrap();
+
+    let parent_block_hash = block.raw().parent_block_hash().unpack();
+    let parent_block_committed_info = db.get_l2block_committed_info(&parent_block_hash)?.unwrap();
+
+    let rollup_type_script =
+        ckb_types::packed::Script::new_unchecked(base.rollup_type_script.as_bytes());
+    let rpc_client = {
+        let indexer_client = HttpClient::new(config.rpc_client.indexer_url.to_owned())?;
+        let ckb_client = HttpClient::new(config.rpc_client.ckb_url.to_owned())?;
+        RPCClient::new(
+            rollup_type_script.clone(),
+            base.rollup_context,
+            ckb_client,
+            indexer_client,
+        )
+    };
+
+    if !smol::block_on(find_l2block_on_l1(
+        &rpc_client,
+        &parent_block_committed_info,
+    ))? {
+        bail!(
+            "cannot not find parent block {} on l1",
+            block_number.saturating_sub(1)
+        );
+    }
+
+    {
+        let parent_block_l1_block_number = parent_block_committed_info.number().unpack();
+        let search_key = SearchKey {
+            script: rollup_type_script.into(),
+            script_type: ScriptType::Type,
+            filter: Some(SearchKeyFilter {
+                script: None,
+                output_data_len_range: None,
+                output_capacity_range: None,
+                block_range: Some([
+                    BlockNumber::from(parent_block_l1_block_number + 1),
+                    BlockNumber::from(u64::max_value()),
+                ]),
+            }),
+        };
+        let order = Order::Asc;
+        let limit = Uint32::from(1000);
+
+        let mut last_cursor = None;
+        loop {
+            let txs: Pagination<Tx> =
+                to_result(smol::block_on(rpc_client.indexer.client().request(
+                    "get_transactions",
+                    Some(ClientParams::Array(vec![
+                        json!(search_key),
+                        json!(order),
+                        json!(limit),
+                        json!(last_cursor),
+                    ])),
+                ))?)?;
+
+            if txs.objects.is_empty() {
+                break;
+            }
+
+            log::debug!("Poll transactions: {}", txs.objects.len());
+            let tx_hash = &txs.objects[0].tx_hash;
+            if tx_hash.0 != Unpack::<[u8; 32]>::unpack(&block_committed_info.transaction_hash()) {
+                bail!("block l1 tx hash not match");
+            }
+
+            if txs.last_cursor.is_empty() {
+                break;
+            }
+            last_cursor = Some(txs.last_cursor);
+        }
+    }
+
+    Ok(())
 }
 
 pub fn replay_chain(
@@ -382,6 +481,22 @@ fn get_block_info(l2block: &RawL2Block) -> BlockInfo {
         .number(l2block.number())
         .timestamp(l2block.timestamp())
         .build()
+}
+
+async fn find_l2block_on_l1(
+    rpc_client: &RPCClient,
+    committed_info: &L2BlockCommittedInfo,
+) -> Result<bool> {
+    let tx_hash: gw_common::H256 =
+        From::<[u8; 32]>::from(committed_info.transaction_hash().unpack());
+    let tx_status = rpc_client.get_transaction_status(tx_hash).await?;
+    if !matches!(tx_status, Some(TxStatus::Committed)) {
+        return Ok(false);
+    }
+
+    let block_hash: [u8; 32] = committed_info.block_hash().unpack();
+    let l1_block_hash = rpc_client.get_transaction_block_hash(tx_hash).await?;
+    Ok(l1_block_hash == Some(block_hash))
 }
 
 struct ReplayChain {
