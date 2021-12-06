@@ -48,6 +48,7 @@ pub fn replay_block(config: &Config, block_number: u64) -> Result<(), ReplayErro
         store: base.store,
         generator: base.generator,
     };
+    log::info!("init complete");
 
     replay.replay(block_number)
 }
