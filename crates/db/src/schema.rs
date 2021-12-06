@@ -3,7 +3,7 @@
 /// Column families alias type
 pub type Col = u8;
 /// Total column number
-pub const COLUMNS: u32 = 32;
+pub const COLUMNS: u32 = 33;
 /// Column store meta data
 pub const COLUMN_META: Col = 0;
 /// Column store chain index
