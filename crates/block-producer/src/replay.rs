@@ -26,7 +26,7 @@ use std::sync::Arc;
 use crate::runner::BaseInitComponents;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct InvalidState {
+pub struct ReplayState {
     pub block_number: u64,
     pub tx_hash: ckb_types::H256,
     pub read_values: HashMap<ckb_types::H256, ckb_types::H256>,
@@ -34,7 +34,7 @@ pub struct InvalidState {
 }
 
 pub enum ReplayError {
-    State(InvalidState),
+    State(ReplayState),
     Internal(anyhow::Error),
 }
 
@@ -51,6 +51,25 @@ pub fn replay_block(config: &Config, block_number: u64) -> Result<(), ReplayErro
     log::info!("init complete");
 
     replay.replay(block_number)
+}
+
+pub fn replay_block_tx(
+    config: &Config,
+    block_number: u64,
+    tx_index: u32,
+) -> Result<ReplayState, ReplayError> {
+    if config.store.path.as_os_str().is_empty() {
+        return Err(anyhow!("empty store path, no db block to verify").into());
+    }
+
+    let base = BaseInitComponents::init(config, true)?;
+    let replay = ReplayBlock {
+        store: base.store,
+        generator: base.generator,
+    };
+    log::info!("init complete");
+
+    replay.replay_block_tx(block_number, tx_index)
 }
 
 pub fn replay_chain(
@@ -133,14 +152,33 @@ impl ReplayBlock {
 
     pub fn replay_block(&self, block: &L2Block) -> Result<(), ReplayError> {
         let db = self.store.begin_transaction();
-        Self::replay_with(&db, &self.generator, block)
+        Self::replay_with(&db, &self.generator, block, None)?;
+
+        Ok(())
+    }
+
+    pub fn replay_block_tx(
+        &self,
+        block_number: u64,
+        tx_idx: u32,
+    ) -> Result<ReplayState, ReplayError> {
+        let db = self.store.begin_transaction();
+        let block_hash = db
+            .get_block_hash_by_number(block_number)?
+            .ok_or_else(|| anyhow!("block hash not found"))?;
+        let block = db
+            .get_block(&block_hash)?
+            .ok_or_else(|| anyhow!("block not found"))?;
+
+        Self::replay_with(&db, &self.generator, &block, Some(tx_idx))
     }
 
     pub fn replay_with(
         db: &StoreTransaction,
         generator: &Generator,
         block: &L2Block,
-    ) -> Result<(), ReplayError> {
+        tar_tx_idx: Option<u32>,
+    ) -> Result<ReplayState, ReplayError> {
         let raw_block = block.raw();
         let block_info = get_block_info(&raw_block);
         let block_number = raw_block.number().unpack();
@@ -261,7 +299,7 @@ impl ReplayBlock {
                 L2TX_MAX_CYCLES,
             )?;
             if run_result.exit_code != 0 {
-                return Err(ReplayError::State(InvalidState {
+                return Err(ReplayError::State(ReplayState {
                     block_number,
                     tx_hash: raw_tx.hash().into(),
                     read_values: run_result
@@ -275,6 +313,24 @@ impl ReplayBlock {
                         .map(|(k, v)| (ckb_types::H256(k.into()), ckb_types::H256(v.into())))
                         .collect(),
                 }));
+            }
+            if tar_tx_idx == Some(tx_index as u32) {
+                let replay_state = ReplayState {
+                    block_number,
+                    tx_hash: raw_tx.hash().into(),
+                    read_values: run_result
+                        .read_values
+                        .into_iter()
+                        .map(|(k, v)| (ckb_types::H256(k.into()), ckb_types::H256(v.into())))
+                        .collect(),
+                    write_values: run_result
+                        .write_values
+                        .into_iter()
+                        .map(|(k, v)| (ckb_types::H256(k.into()), ckb_types::H256(v.into())))
+                        .collect(),
+                };
+
+                return Ok(replay_state);
             }
 
             state.apply_run_result(&run_result)?;

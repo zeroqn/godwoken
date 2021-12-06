@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{App, Arg, SubCommand};
-use gw_block_producer::replay::{replay_block, replay_chain, ReplayError};
+use gw_block_producer::replay::{replay_block, replay_block_tx, replay_chain, ReplayError};
 use gw_block_producer::{db_block_validator, runner};
 use gw_config::Config;
 use gw_version::Version;
@@ -114,6 +114,12 @@ fn run_cli() -> Result<()> {
                         .required(true)
                         .help("block number"),
                 )
+                .arg(
+                    Arg::with_name("tx-index")
+                        .short("t")
+                        .takes_value(true)
+                        .help("transaction index"),
+                )
                 .display_order(3),
         )
         .subcommand(
@@ -170,19 +176,44 @@ fn run_cli() -> Result<()> {
                 .map(str::parse)
                 .transpose()?
                 .expect("block number");
-            if let Err(ReplayError::State(state)) = replay_block(&config, block_number) {
-                let json_state = serde_json::to_string_pretty(&state)?;
-                let dir = config.debug.debug_tx_dump_path.as_path();
-                create_dir_all(&dir)?;
+            let tx_index: Option<u32> = m.value_of("tx-index").map(str::parse).transpose()?;
 
-                let mut dump_path = PathBuf::new();
-                dump_path.push(dir);
+            let state = match tx_index {
+                Some(tx_index) => match replay_block_tx(&config, block_number, tx_index) {
+                    Ok(state) => state,
+                    Err(ReplayError::State(state)) => {
+                        log::error!("replay block {} tx {} error", block_number, tx_index);
+                        state
+                    }
+                    Err(err) => {
+                        log::error!("replay block {} tx {} error", block_number, tx_index);
+                        return Err(err);
+                    }
+                },
+                None => match replay_block(&config, block_number) {
+                    Ok(()) => (),
+                    Err(ReplayError::State(state)) => {
+                        log::error!("replay block {} error", block_number);
+                        state
+                    }
+                    Err(err) => {
+                        log::error!("replay block {} tx {} error", block_number, tx_index);
+                        return Err(err);
+                    }
+                },
+            };
 
-                let dump_filename = format!("{}-{}-state.json", state.block_number, state.tx_hash);
-                dump_path.push(dump_filename);
+            let json_state = serde_json::to_string_pretty(&state)?;
+            let dir = config.debug.debug_tx_dump_path.as_path();
+            create_dir_all(&dir)?;
 
-                write(dump_path, json_state)?;
-            }
+            let mut dump_path = PathBuf::new();
+            dump_path.push(dir);
+
+            let dump_filename = format!("{}-{}-state.json", state.block_number, state.tx_hash);
+            dump_path.push(dump_filename);
+
+            write(dump_path, json_state)?;
         }
         (COMMAND_REPLAY_CHAIN, Some(m)) => {
             let config_path = m.value_of(ARG_CONFIG).unwrap();
