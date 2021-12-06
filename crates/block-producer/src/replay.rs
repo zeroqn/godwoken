@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use ckb_types::prelude::{Builder, Entity};
 use gw_chain::chain::Chain;
 use gw_common::merkle_utils::calculate_state_checkpoint;
@@ -15,8 +15,9 @@ use gw_store::chain_view::ChainView;
 use gw_store::state_db::{CheckPoint, StateDBMode, StateDBTransaction, SubState, WriteContext};
 use gw_store::transaction::StoreTransaction;
 use gw_store::Store;
-use gw_types::packed::{BlockInfo, L2Block, L2Transaction, RawL2Block};
+use gw_types::packed::{BlockInfo, L2Block, RawL2Block};
 use gw_types::prelude::Unpack;
+use serde::{Deserialize, Serialize};
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -24,19 +25,22 @@ use std::sync::Arc;
 
 use crate::runner::BaseInitComponents;
 
+#[derive(Debug, Serialize, Deserialize)]
 pub struct InvalidState {
-    tx: L2Transaction,
-    kv: HashMap<H256, H256>,
+    pub block_number: u64,
+    pub tx_hash: ckb_types::H256,
+    pub read_values: HashMap<ckb_types::H256, ckb_types::H256>,
+    pub write_values: HashMap<ckb_types::H256, ckb_types::H256>,
 }
 
 pub enum ReplayError {
     State(InvalidState),
-    Db(gw_db::error::Error),
+    Internal(anyhow::Error),
 }
 
-pub fn replay_block(config: Config, block_number: u64) -> Result<()> {
+pub fn replay_block(config: Config, block_number: u64) -> Result<(), ReplayError> {
     if config.store.path.as_os_str().is_empty() {
-        bail!("empty store path, no db block to verify");
+        return Err(anyhow!("empty store path, no db block to verify").into());
     }
 
     let base = BaseInitComponents::init(&config, true)?;
@@ -52,9 +56,9 @@ pub fn replay_chain(
     config: Config,
     dst_store: impl AsRef<Path>,
     from_block: Option<u64>,
-) -> Result<()> {
+) -> Result<(), ReplayError> {
     if config.store.path.as_os_str().is_empty() {
-        bail!("empty store path, no db block to verify");
+        return Err(anyhow!("empty store path, no db block to verify").into());
     }
 
     let base = BaseInitComponents::init(&config, true)?;
@@ -114,7 +118,7 @@ pub struct ReplayBlock {
 }
 
 impl ReplayBlock {
-    pub fn replay(&self, block_number: u64) -> Result<()> {
+    pub fn replay(&self, block_number: u64) -> Result<(), ReplayError> {
         let db = self.store.begin_transaction();
         let block_hash = db
             .get_block_hash_by_number(block_number)?
@@ -126,7 +130,7 @@ impl ReplayBlock {
         self.replay_block(&block)
     }
 
-    pub fn replay_block(&self, block: &L2Block) -> Result<()> {
+    pub fn replay_block(&self, block: &L2Block) -> Result<(), ReplayError> {
         let db = self.store.begin_transaction();
         Self::replay_with(&db, &self.generator, block)
     }
@@ -135,7 +139,7 @@ impl ReplayBlock {
         db: &StoreTransaction,
         generator: &Generator,
         block: &L2Block,
-    ) -> Result<()> {
+    ) -> Result<(), ReplayError> {
         let raw_block = block.raw();
         let block_info = get_block_info(&raw_block);
         let block_number = raw_block.number().unpack();
@@ -198,10 +202,10 @@ impl ReplayBlock {
 
             let block_checkpoint: H256 = match state_checkpoint_list.get(wth_idx) {
                 Some(checkpoint) => *checkpoint,
-                None => bail!("withdrawal {} checkpoint not found", wth_idx),
+                None => return Err(anyhow!("withdrawal {} checkpoint not found", wth_idx).into()),
             };
             if block_checkpoint != expected_checkpoint {
-                bail!("withdrawal {} checkpoint not match", wth_idx);
+                return Err(anyhow!("withdrawal {} checkpoint not match", wth_idx).into());
             }
         }
 
@@ -222,7 +226,7 @@ impl ReplayBlock {
             .prev_state_checkpoint()
             .unpack();
         if block_prev_txs_state_checkpoint != expected_prev_txs_state_checkpoint {
-            bail!("prev txs state checkpoint not match");
+            return Err(anyhow!("prev txs state checkpoint not match").into());
         }
 
         // handle transactions
@@ -237,23 +241,40 @@ impl ReplayBlock {
             let expected_nonce = state.get_nonce(raw_tx.from_id().unpack())?;
             let actual_nonce: u32 = raw_tx.nonce().unpack();
             if actual_nonce != expected_nonce {
-                bail!(
+                return Err(anyhow!(
                     "tx {} nonce not match, expected {} actual {}",
                     tx_index,
                     expected_nonce,
                     actual_nonce
-                );
+                )
+                .into());
             }
 
             // build call context
             // NOTICE users only allowed to send HandleMessage CallType txs
-            let run_result = generator.execute_transaction(
+            let run_result = generator.unchecked_execute_transaction(
                 &chain_view,
                 state,
                 &block_info,
                 &raw_tx,
                 L2TX_MAX_CYCLES,
             )?;
+            if run_result.exit_code != 0 {
+                return Err(ReplayError::State(InvalidState {
+                    block_number,
+                    tx_hash: raw_tx.hash().into(),
+                    read_values: run_result
+                        .read_values
+                        .into_iter()
+                        .map(|(k, v)| (ckb_types::H256(k.into()), ckb_types::H256(v.into())))
+                        .collect(),
+                    write_values: run_result
+                        .write_values
+                        .into_iter()
+                        .map(|(k, v)| (ckb_types::H256(k.into()), ckb_types::H256(v.into())))
+                        .collect(),
+                }));
+            }
 
             state.apply_run_result(&run_result)?;
             let account_state = state.get_merkle_state();
@@ -265,11 +286,11 @@ impl ReplayBlock {
             let checkpoint_index = withdrawal_requests.len() + tx_index;
             let block_checkpoint: H256 = match state_checkpoint_list.get(checkpoint_index) {
                 Some(checkpoint) => *checkpoint,
-                None => bail!("tx {} checkpoint not found", tx_index),
+                None => return Err(anyhow!("tx {} checkpoint not found", tx_index).into()),
             };
 
             if block_checkpoint != expected_checkpoint {
-                bail!("tx {} checkpoint not match", tx_index);
+                return Err(anyhow!("tx {} checkpoint not match", tx_index).into());
             }
         }
 
@@ -285,19 +306,13 @@ fn get_block_info(l2block: &RawL2Block) -> BlockInfo {
         .build()
 }
 
-impl From<gw_db::error::Error> for ReplayError {
-    fn from(db_err: gw_db::error::Error) -> Self {
-        ReplayError::Db(db_err)
-    }
-}
-
-pub struct ReplayChain {
+struct ReplayChain {
     src_chain: Chain,
     dst_chain: Chain,
 }
 
 impl ReplayChain {
-    pub fn replay(&mut self, from_block_number: u64) -> Result<()> {
+    pub fn replay(&mut self, from_block_number: u64) -> Result<(), ReplayError> {
         let src_db = self.src_chain.store().begin_transaction();
         let src_tip_block = src_db.get_tip_block().with_context(|| "src tip block")?;
         let src_tip_block_number = src_tip_block.raw().number().unpack();
@@ -314,26 +329,43 @@ impl ReplayChain {
         while block_number <= src_tip_block_number {
             let block_hash = match src_db.get_block_hash_by_number(block_number)? {
                 Some(hash) => hash,
-                None => bail!("replay chain block {} hash not found", block_number),
+                None => {
+                    return Err(
+                        anyhow!("replay chain block {} hash not found", block_number).into(),
+                    )
+                }
             };
             let block = match src_db.get_block(&block_hash)? {
                 Some(block) => block,
-                None => bail!("replay chain block {} not found", block_number),
+                None => return Err(anyhow!("replay chain block {} not found", block_number).into()),
             };
             let block_committed_info = match src_db.get_l2block_committed_info(&block_hash)? {
                 Some(info) => info,
-                None => bail!(
-                    "replay chain block committed info {} not found",
-                    block_number
-                ),
+                None => {
+                    return Err(anyhow!(
+                        "replay chain block committed info {} not found",
+                        block_number
+                    )
+                    .into())
+                }
             };
             let global_state = match src_db.get_block_post_global_state(&block_hash)? {
                 Some(global_state) => global_state,
-                None => bail!("replay chain block global state {} not found", block_number),
+                None => {
+                    return Err(anyhow!(
+                        "replay chain block global state {} not found",
+                        block_number
+                    )
+                    .into())
+                }
             };
             let deposits = match src_db.get_block_deposit_requests(&block_hash)? {
                 Some(deposits) => deposits,
-                None => bail!("replay chain block deposits {} not found", block_number),
+                None => {
+                    return Err(
+                        anyhow!("replay chain block deposits {} not found", block_number).into(),
+                    )
+                }
             };
 
             if let Some(_challenge_target) = self.dst_chain.process_block(
@@ -344,7 +376,7 @@ impl ReplayChain {
                 deposits,
                 Default::default(),
             )? {
-                bail!("bad block {} found", block_number);
+                return Err(anyhow!("bad block {} found", block_number).into());
             }
 
             dst_db.commit()?;
@@ -352,5 +384,41 @@ impl ReplayChain {
         }
 
         Ok(())
+    }
+}
+
+impl From<anyhow::Error> for ReplayError {
+    fn from(any_err: anyhow::Error) -> Self {
+        ReplayError::Internal(any_err)
+    }
+}
+
+impl From<gw_generator::error::Error> for ReplayError {
+    fn from(err: gw_generator::error::Error) -> Self {
+        ReplayError::Internal(err.into())
+    }
+}
+
+impl From<gw_db::error::Error> for ReplayError {
+    fn from(err: gw_db::error::Error) -> Self {
+        ReplayError::Internal(err.into())
+    }
+}
+
+impl From<gw_generator::error::TransactionValidateError> for ReplayError {
+    fn from(err: gw_generator::error::TransactionValidateError) -> Self {
+        ReplayError::Internal(err.into())
+    }
+}
+
+impl From<gw_generator::error::TransactionError> for ReplayError {
+    fn from(err: gw_generator::error::TransactionError) -> Self {
+        ReplayError::Internal(err.into())
+    }
+}
+
+impl From<gw_common::error::Error> for ReplayError {
+    fn from(err: gw_common::error::Error) -> Self {
+        ReplayError::Internal(err.into())
     }
 }
