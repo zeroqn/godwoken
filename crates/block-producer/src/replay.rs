@@ -143,6 +143,9 @@ impl ReplayBlock {
         let block_hash = db
             .get_block_hash_by_number(block_number)?
             .ok_or_else(|| anyhow!("block hash not found"))?;
+        log::info!("block hash {:?}", block_hash);
+        log::info!("block hash {}", ckb_types::H256(block_hash.into()));
+
         let block = db
             .get_block(&block_hash)?
             .ok_or_else(|| anyhow!("block not found"))?;
@@ -166,6 +169,9 @@ impl ReplayBlock {
         let block_hash = db
             .get_block_hash_by_number(block_number)?
             .ok_or_else(|| anyhow!("block hash not found"))?;
+        log::info!("block hash {:?}", block_hash);
+        log::info!("block hash {}", ckb_types::H256(block_hash.into()));
+
         let block = db
             .get_block(&block_hash)?
             .ok_or_else(|| anyhow!("block not found"))?;
