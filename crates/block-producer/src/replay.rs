@@ -12,7 +12,7 @@ use gw_generator::constants::L2TX_MAX_CYCLES;
 use gw_generator::genesis::init_genesis;
 use gw_generator::traits::StateExt;
 use gw_generator::Generator;
-use gw_jsonrpc_types::ckb_jsonrpc_types::{BlockNumber, Uint32};
+use gw_jsonrpc_types::ckb_jsonrpc_types::{BlockNumber, HeaderView, TransactionWithStatus, Uint32};
 use gw_rpc_client::indexer_types::{Order, Pagination, ScriptType, SearchKey, SearchKeyFilter, Tx};
 use gw_rpc_client::rpc_client::RPCClient;
 use gw_store::chain_view::ChainView;
@@ -20,8 +20,10 @@ use gw_store::state_db::{CheckPoint, StateDBMode, StateDBTransaction, SubState, 
 use gw_store::transaction::StoreTransaction;
 use gw_store::Store;
 use gw_types::offchain::TxStatus;
-use gw_types::packed::{BlockInfo, L2Block, L2BlockCommittedInfo, RawL2Block};
-use gw_types::prelude::Unpack;
+use gw_types::packed::{
+    BlockInfo, L2Block, L2BlockCommittedInfo, RawL2Block, RollupActionUnion, Transaction,
+};
+use gw_types::prelude::{Pack, Unpack};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -53,7 +55,7 @@ pub fn replay_block(config: &Config, block_number: u64) -> Result<(), ReplayErro
     let base = BaseInitComponents::init(config, true)?;
     log::info!("init complete");
 
-    check_block_through_l1(&base, config, block_number)?;
+    smol::block_on(check_block_through_l1(&base, config, block_number))?;
 
     let replay = ReplayBlock {
         store: base.store,
@@ -82,7 +84,7 @@ pub fn replay_block_tx(
     replay.replay_block_tx(block_number, tx_index)
 }
 
-pub fn check_block_through_l1(
+pub async fn check_block_through_l1(
     base: &BaseInitComponents,
     config: &Config,
     block_number: u64,
@@ -108,10 +110,7 @@ pub fn check_block_through_l1(
         )
     };
 
-    if !smol::block_on(find_l2block_on_l1(
-        &rpc_client,
-        &parent_block_committed_info,
-    ))? {
+    if !find_l2block_on_l1(&rpc_client, &parent_block_committed_info).await? {
         bail!(
             "cannot not find parent block {} on l1",
             block_number.saturating_sub(1)
@@ -138,16 +137,21 @@ pub fn check_block_through_l1(
 
         let mut last_cursor = None;
         loop {
-            let txs: Pagination<Tx> =
-                to_result(smol::block_on(rpc_client.indexer.client().request(
-                    "get_transactions",
-                    Some(ClientParams::Array(vec![
-                        json!(search_key),
-                        json!(order),
-                        json!(limit),
-                        json!(last_cursor),
-                    ])),
-                ))?)?;
+            let txs: Pagination<Tx> = to_result(
+                rpc_client
+                    .indexer
+                    .client()
+                    .request(
+                        "get_transactions",
+                        Some(ClientParams::Array(vec![
+                            json!(search_key),
+                            json!(order),
+                            json!(limit),
+                            json!(last_cursor),
+                        ])),
+                    )
+                    .await?,
+            )?;
 
             if txs.objects.is_empty() {
                 break;
@@ -155,8 +159,47 @@ pub fn check_block_through_l1(
 
             log::debug!("Poll transactions: {}", txs.objects.len());
             let tx_hash = &txs.objects[0].tx_hash;
-            if tx_hash.0 != Unpack::<[u8; 32]>::unpack(&block_committed_info.transaction_hash()) {
-                bail!("block l1 tx hash not match");
+            let tx: Option<TransactionWithStatus> = to_result(
+                rpc_client
+                    .ckb
+                    .request(
+                        "get_transaction",
+                        Some(ClientParams::Array(vec![json!(tx_hash)])),
+                    )
+                    .await?,
+            )?;
+            let tx_with_status =
+                tx.ok_or_else(|| anyhow::anyhow!("Cannot locate transaction: {:x}", tx_hash))?;
+            let tx = {
+                let tx: ckb_types::packed::Transaction = tx_with_status.transaction.inner.into();
+                Transaction::new_unchecked(tx.as_bytes())
+            };
+            let block_hash = tx_with_status.tx_status.block_hash.ok_or_else(|| {
+                anyhow::anyhow!("Transaction {:x} is not committed on chain!", tx_hash)
+            })?;
+            let header_view: Option<HeaderView> = to_result(
+                rpc_client
+                    .ckb
+                    .request(
+                        "get_header",
+                        Some(ClientParams::Array(vec![json!(block_hash)])),
+                    )
+                    .await?,
+            )?;
+            let header_view = header_view
+                .ok_or_else(|| anyhow::anyhow!("Cannot locate block: {:x}", block_hash))?;
+            let l2block_committed_info = L2BlockCommittedInfo::new_builder()
+                .number(header_view.inner.number.value().pack())
+                .block_hash(block_hash.0.pack())
+                .transaction_hash(tx_hash.pack())
+                .build();
+
+            if l2block_committed_info.as_slice() != block_committed_info.as_slice() {
+                log::info!("expected committed info");
+                print_block_committed_info(&block_committed_info);
+                log::info!("actual committed info");
+                print_block_committed_info(&l2block_committed_info);
+                bail!("block l1 commit not match");
             }
 
             if txs.last_cursor.is_empty() {
@@ -479,6 +522,15 @@ fn get_block_info(l2block: &RawL2Block) -> BlockInfo {
         .number(l2block.number())
         .timestamp(l2block.timestamp())
         .build()
+}
+
+fn print_block_committed_info(info: &L2BlockCommittedInfo) {
+    let block_number: u64 = info.number().unpack();
+    log::info!("l1 block number {}", block_number);
+    let tx_hash: [u8; 32] = info.transaction_hash().unpack();
+    log::info!("l1 tx hash {}", ckb_types::H256(tx_hash));
+    let block_hash: [u8; 32] = info.block_hash().unpack();
+    log::info!("l1 block hash {}", ckb_types::H256(block_hash));
 }
 
 async fn find_l2block_on_l1(
