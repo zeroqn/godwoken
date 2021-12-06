@@ -185,19 +185,18 @@ fn run_cli() -> Result<()> {
                         log::error!("replay block {} tx {} error", block_number, tx_index);
                         state
                     }
-                    Err(err) => {
+                    Err(ReplayError::Internal(err)) => {
                         log::error!("replay block {} tx {} error", block_number, tx_index);
                         return Err(err);
                     }
                 },
                 None => match replay_block(&config, block_number) {
-                    Ok(()) => (),
+                    Ok(()) => return Ok(()),
                     Err(ReplayError::State(state)) => {
                         log::error!("replay block {} error", block_number);
                         state
                     }
-                    Err(err) => {
-                        log::error!("replay block {} tx {} error", block_number, tx_index);
+                    Err(ReplayError::Internal(err)) => {
                         return Err(err);
                     }
                 },
