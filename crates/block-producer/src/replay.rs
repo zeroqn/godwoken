@@ -51,13 +51,14 @@ pub fn replay_block(config: &Config, block_number: u64) -> Result<(), ReplayErro
     }
 
     let base = BaseInitComponents::init(config, true)?;
+    log::info!("init complete");
+
+    check_block_through_l1(&base, block_number)?;
+
     let replay = ReplayBlock {
         store: base.store,
         generator: base.generator,
     };
-    log::info!("init complete");
-
-    check_block_through_l1(config, block_number)?;
 
     replay.replay(block_number)
 }
@@ -81,14 +82,7 @@ pub fn replay_block_tx(
     replay.replay_block_tx(block_number, tx_index)
 }
 
-pub fn check_block_through_l1(config: &Config, block_number: u64) -> Result<()> {
-    if config.store.path.as_os_str().is_empty() {
-        return Err(anyhow!("empty store path, no db block to verify").into());
-    }
-
-    let base = BaseInitComponents::init(config, true)?;
-    log::info!("init complete");
-
+pub fn check_block_through_l1(base: &BaseInitComponents, block_number: u64) -> Result<()> {
     let db = base.store.begin_transaction();
     let block_hash = db.get_block_hash_by_number(block_number)?.unwrap();
     let block = db.get_block(&block_hash)?.unwrap();
