@@ -1,6 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use async_jsonrpc_client::{HttpClient, Params as ClientParams, Transport};
-use ckb_types::prelude::{Builder, Entity};
+use ckb_types::bytes::Bytes;
+use ckb_types::packed::Script;
+use ckb_types::prelude::{Builder, Entity, Reader};
 use gw_chain::chain::Chain;
 use gw_common::merkle_utils::calculate_state_checkpoint;
 use gw_common::state::State;
@@ -21,7 +23,8 @@ use gw_store::transaction::StoreTransaction;
 use gw_store::Store;
 use gw_types::offchain::TxStatus;
 use gw_types::packed::{
-    BlockInfo, L2Block, L2BlockCommittedInfo, RawL2Block, RollupActionUnion, Transaction,
+    BlockInfo, L2Block, L2BlockCommittedInfo, RawL2Block, RollupAction, RollupActionUnion,
+    Transaction, WitnessArgs, WitnessArgsReader,
 };
 use gw_types::prelude::{Pack, Unpack};
 use serde::{Deserialize, Serialize};
@@ -120,7 +123,7 @@ pub async fn check_block_through_l1(
     {
         let parent_block_l1_block_number = parent_block_committed_info.number().unpack();
         let search_key = SearchKey {
-            script: rollup_type_script.into(),
+            script: rollup_type_script.clone().into(),
             script_type: ScriptType::Type,
             filter: Some(SearchKeyFilter {
                 script: None,
@@ -193,6 +196,17 @@ pub async fn check_block_through_l1(
                 .block_hash(block_hash.0.pack())
                 .transaction_hash(tx_hash.pack())
                 .build();
+
+            let rollup_action = extract_rollup_action(&rollup_type_script, &tx)?;
+            let _ = match rollup_action.to_enum() {
+                RollupActionUnion::RollupSubmitBlock(submitted) => {
+                    let l2block = submitted.block();
+                    let block_number: u64 = l2block.raw().number().unpack();
+                    let block_hash = ckb_types::H256(l2block.hash());
+                    log::info!("found l2block {} hash {}", block_number, block_hash);
+                }
+                _ => bail!("unexpected rollup action {:?}", rollup_action),
+            };
 
             if l2block_committed_info.as_slice() != block_committed_info.as_slice() {
                 log::info!("expected committed info");
@@ -665,4 +679,38 @@ impl From<gw_common::error::Error> for ReplayError {
     fn from(err: gw_common::error::Error) -> Self {
         ReplayError::Internal(err.into())
     }
+}
+
+fn extract_rollup_action(rollup_type_script: &Script, tx: &Transaction) -> Result<RollupAction> {
+    let rollup_type_hash: [u8; 32] = {
+        let hash = rollup_type_script.calc_script_hash();
+        ckb_types::prelude::Unpack::unpack(&hash)
+    };
+
+    // find rollup state cell from outputs
+    let (i, _) = {
+        let outputs = tx.raw().outputs().into_iter();
+        let find_rollup = outputs.enumerate().find(|(_i, output)| {
+            output.type_().to_opt().map(|type_| type_.hash()) == Some(rollup_type_hash)
+        });
+        find_rollup.ok_or_else(|| anyhow!("no rollup cell found"))?
+    };
+
+    let witness: Bytes = {
+        let rollup_witness = tx.witnesses().get(i).ok_or_else(|| anyhow!("no witness"))?;
+        rollup_witness.unpack()
+    };
+
+    let witness_args = match WitnessArgsReader::verify(&witness, false) {
+        Ok(_) => WitnessArgs::new_unchecked(witness),
+        Err(_) => return Err(anyhow!("invalid witness")),
+    };
+
+    let output_type: Bytes = {
+        let type_ = witness_args.output_type();
+        let should_exist = type_.to_opt().ok_or_else(|| anyhow!("no output type"))?;
+        should_exist.unpack()
+    };
+
+    RollupAction::from_slice(&output_type).map_err(|e| anyhow!("invalid rollup action {}", e))
 }
