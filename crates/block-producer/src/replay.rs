@@ -186,6 +186,12 @@ impl ReplayBlock {
         block: &L2Block,
         tar_tx_idx: Option<u32>,
     ) -> Result<Option<ReplayState>, ReplayError> {
+        let revert_block_root = db.get_reverted_block_smt_root()?;
+        log::info!(
+            "revert block root {}",
+            ckb_types::H256(revert_block_root.into())
+        );
+
         let raw_block = block.raw();
         let block_info = get_block_info(&raw_block);
         let block_number = raw_block.number().unpack();
