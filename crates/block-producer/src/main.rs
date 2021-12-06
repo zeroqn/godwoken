@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
 use clap::{App, Arg, SubCommand};
-use gw_block_producer::replay::{replay_block, replay_chain};
+use gw_block_producer::replay::{replay_block, replay_chain, ReplayError};
 use gw_block_producer::{db_block_validator, runner};
 use gw_config::Config;
 use gw_version::Version;
+use std::fs::{create_dir_all, write};
+use std::path::PathBuf;
 use std::{fs, path::Path};
 
 const COMMAND_RUN: &str = "run";
@@ -168,14 +170,38 @@ fn run_cli() -> Result<()> {
                 .map(str::parse)
                 .transpose()?
                 .expect("block number");
-            replay_block(config, block_number)?;
+            if let Err(ReplayError::State(state)) = replay_block(&config, block_number) {
+                let json_state = serde_json::to_string_pretty(&state)?;
+                let dir = config.debug.debug_tx_dump_path.as_path();
+                create_dir_all(&dir)?;
+
+                let mut dump_path = PathBuf::new();
+                dump_path.push(dir);
+
+                let dump_filename = format!("{}-{}-state.json", state.block_number, state.tx_hash);
+                dump_path.push(dump_filename);
+
+                write(dump_path, json_state)?;
+            }
         }
         (COMMAND_REPLAY_CHAIN, Some(m)) => {
             let config_path = m.value_of(ARG_CONFIG).unwrap();
             let config = read_config(&config_path)?;
             let from_block: Option<u64> = m.value_of(ARG_FROM_BLOCK).map(str::parse).transpose()?;
             let dst_store = m.value_of("dst-store").unwrap();
-            replay_chain(config, dst_store, from_block)?;
+            if let Err(ReplayError::State(state)) = replay_chain(&config, dst_store, from_block) {
+                let json_state = serde_json::to_string_pretty(&state)?;
+                let dir = config.debug.debug_tx_dump_path.as_path();
+                create_dir_all(&dir)?;
+
+                let mut dump_path = PathBuf::new();
+                dump_path.push(dir);
+
+                let dump_filename = format!("{}-{}-state.json", state.block_number, state.tx_hash);
+                dump_path.push(dump_filename);
+
+                write(dump_path, json_state)?;
+            }
         }
         _ => {
             // default command: start a Godwoken node

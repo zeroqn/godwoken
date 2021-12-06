@@ -38,12 +38,12 @@ pub enum ReplayError {
     Internal(anyhow::Error),
 }
 
-pub fn replay_block(config: Config, block_number: u64) -> Result<(), ReplayError> {
+pub fn replay_block(config: &Config, block_number: u64) -> Result<(), ReplayError> {
     if config.store.path.as_os_str().is_empty() {
         return Err(anyhow!("empty store path, no db block to verify").into());
     }
 
-    let base = BaseInitComponents::init(&config, true)?;
+    let base = BaseInitComponents::init(config, true)?;
     let replay = ReplayBlock {
         store: base.store,
         generator: base.generator,
@@ -53,7 +53,7 @@ pub fn replay_block(config: Config, block_number: u64) -> Result<(), ReplayError
 }
 
 pub fn replay_chain(
-    config: Config,
+    config: &Config,
     dst_store: impl AsRef<Path>,
     from_block: Option<u64>,
 ) -> Result<(), ReplayError> {
@@ -61,7 +61,7 @@ pub fn replay_chain(
         return Err(anyhow!("empty store path, no db block to verify").into());
     }
 
-    let base = BaseInitComponents::init(&config, true)?;
+    let base = BaseInitComponents::init(config, true)?;
     let BaseInitComponents {
         rollup_config,
         store,
