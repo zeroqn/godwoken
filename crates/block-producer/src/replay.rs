@@ -213,7 +213,6 @@ pub async fn check_block_through_l1(
                 print_block_committed_info(&block_committed_info);
                 log::info!("actual committed info");
                 print_block_committed_info(&l2block_committed_info);
-                bail!("block l1 commit not match");
             }
 
             if txs.last_cursor.is_empty() {
