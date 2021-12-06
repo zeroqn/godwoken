@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{App, Arg, SubCommand};
-use gw_block_producer::replay_block::replay;
+use gw_block_producer::replay::{replay_block, replay_chain};
 use gw_block_producer::{db_block_validator, runner};
 use gw_config::Config;
 use gw_version::Version;
@@ -10,6 +10,7 @@ const COMMAND_RUN: &str = "run";
 const COMMAND_EXAMPLE_CONFIG: &str = "generate-example-config";
 const COMMAND_VERIFY_DB_BLOCK: &str = "verify-db-block";
 const COMMAND_REPLAY_BLOCK: &str = "replay-block";
+const COMMAND_REPLAY_CHAIN: &str = "replay-chain";
 const ARG_OUTPUT_PATH: &str = "output-path";
 const ARG_CONFIG: &str = "config";
 const ARG_SKIP_CONFIG_CHECK: &str = "skip-config-check";
@@ -112,6 +113,32 @@ fn run_cli() -> Result<()> {
                         .help("block number"),
                 )
                 .display_order(3),
+        )
+        .subcommand(
+            SubCommand::with_name(COMMAND_REPLAY_CHAIN)
+                .about("Replay chain")
+                .arg(
+                    Arg::with_name(ARG_CONFIG)
+                        .short("c")
+                        .takes_value(true)
+                        .required(true)
+                        .default_value("./config.toml")
+                        .help("The config file path"),
+                )
+                .arg(
+                    Arg::with_name("dst-store")
+                        .short("s")
+                        .takes_value(true)
+                        .required(true)
+                        .help("The dst replay chain"),
+                )
+                .arg(
+                    Arg::with_name("ARG_FROM_BLOCK")
+                        .short("f")
+                        .takes_value(true)
+                        .help("From block number"),
+                )
+                .display_order(4),
         );
 
     // handle subcommands
@@ -141,7 +168,14 @@ fn run_cli() -> Result<()> {
                 .map(str::parse)
                 .transpose()?
                 .expect("block number");
-            replay(config, block_number)?;
+            replay_block(config, block_number)?;
+        }
+        (COMMAND_REPLAY_CHAIN, Some(m)) => {
+            let config_path = m.value_of(ARG_CONFIG).unwrap();
+            let config = read_config(&config_path)?;
+            let from_block: Option<u64> = m.value_of(ARG_FROM_BLOCK).map(str::parse).transpose()?;
+            let dst_store = m.value_of("dst-store").unwrap();
+            replay_chain(config, dst_store, from_block)?;
         }
         _ => {
             // default command: start a Godwoken node

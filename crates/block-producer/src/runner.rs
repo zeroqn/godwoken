@@ -210,6 +210,7 @@ pub struct BaseInitComponents {
     pub rpc_client: RPCClient,
     pub store: Store,
     pub generator: Arc<Generator>,
+    pub secp_data: Bytes,
 }
 
 impl BaseInitComponents {
@@ -334,6 +335,7 @@ impl BaseInitComponents {
             rpc_client,
             store,
             generator,
+            secp_data,
         };
 
         Ok(base)
@@ -480,6 +482,7 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
         rpc_client,
         store,
         generator,
+        secp_data,
     } = base;
 
     let chain = Arc::new(Mutex::new(

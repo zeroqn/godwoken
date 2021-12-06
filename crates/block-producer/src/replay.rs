@@ -1,10 +1,14 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use ckb_types::prelude::{Builder, Entity};
+use gw_chain::chain::Chain;
 use gw_common::merkle_utils::calculate_state_checkpoint;
 use gw_common::state::State;
 use gw_common::H256;
 use gw_config::Config;
+use gw_db::schema::COLUMNS;
+use gw_db::RocksDB;
 use gw_generator::constants::L2TX_MAX_CYCLES;
+use gw_generator::genesis::init_genesis;
 use gw_generator::traits::StateExt;
 use gw_generator::Generator;
 use gw_store::chain_view::ChainView;
@@ -15,6 +19,7 @@ use gw_types::packed::{BlockInfo, L2Block, L2Transaction, RawL2Block};
 use gw_types::prelude::Unpack;
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::runner::BaseInitComponents;
@@ -29,7 +34,7 @@ pub enum ReplayError {
     Db(gw_db::error::Error),
 }
 
-pub fn replay(config: Config, block_number: u64) -> Result<()> {
+pub fn replay_block(config: Config, block_number: u64) -> Result<()> {
     if config.store.path.as_os_str().is_empty() {
         bail!("empty store path, no db block to verify");
     }
@@ -41,6 +46,66 @@ pub fn replay(config: Config, block_number: u64) -> Result<()> {
     };
 
     replay.replay(block_number)
+}
+
+pub fn replay_chain(
+    config: Config,
+    dst_store: impl AsRef<Path>,
+    from_block: Option<u64>,
+) -> Result<()> {
+    if config.store.path.as_os_str().is_empty() {
+        bail!("empty store path, no db block to verify");
+    }
+
+    let base = BaseInitComponents::init(&config, true)?;
+    let BaseInitComponents {
+        rollup_config,
+        store,
+        generator,
+        secp_data,
+        ..
+    } = base;
+
+    let src_chain = Chain::create(
+        &rollup_config,
+        &config.chain.rollup_type_script.clone().into(),
+        &config.chain,
+        store,
+        generator.clone(),
+        None,
+    )
+    .with_context(|| "create src chain")?;
+
+    let dst_chain = {
+        let mut store_config = config.store.to_owned();
+        store_config.path = dst_store.as_ref().to_path_buf();
+        let store = Store::new(RocksDB::open(&store_config, COLUMNS));
+
+        init_genesis(
+            &store,
+            &config.genesis,
+            config.chain.genesis_committed_info.clone().into(),
+            secp_data,
+        )
+        .with_context(|| "init dst genesis")?;
+
+        Chain::create(
+            &rollup_config,
+            &config.chain.rollup_type_script.clone().into(),
+            &config.chain,
+            store,
+            generator,
+            None,
+        )
+        .with_context(|| "create dst chain")?
+    };
+
+    let mut replay_chain = ReplayChain {
+        src_chain,
+        dst_chain,
+    };
+
+    replay_chain.replay(from_block.unwrap_or(0))
 }
 
 pub struct ReplayBlock {
@@ -223,5 +288,69 @@ fn get_block_info(l2block: &RawL2Block) -> BlockInfo {
 impl From<gw_db::error::Error> for ReplayError {
     fn from(db_err: gw_db::error::Error) -> Self {
         ReplayError::Db(db_err)
+    }
+}
+
+pub struct ReplayChain {
+    src_chain: Chain,
+    dst_chain: Chain,
+}
+
+impl ReplayChain {
+    pub fn replay(&mut self, from_block_number: u64) -> Result<()> {
+        let src_db = self.src_chain.store().begin_transaction();
+        let src_tip_block = src_db.get_tip_block().with_context(|| "src tip block")?;
+        let src_tip_block_number = src_tip_block.raw().number().unpack();
+
+        let dst_db = self.dst_chain.store().begin_transaction();
+        let dst_tip_block = dst_db.get_tip_block().with_context(|| "dst tip block")?;
+        let dst_tip_block_number: u64 = dst_tip_block.raw().number().unpack();
+
+        let mut block_number = from_block_number;
+        if dst_tip_block_number < block_number {
+            block_number = dst_tip_block_number;
+        }
+
+        while block_number <= src_tip_block_number {
+            let block_hash = match src_db.get_block_hash_by_number(block_number)? {
+                Some(hash) => hash,
+                None => bail!("replay chain block {} hash not found", block_number),
+            };
+            let block = match src_db.get_block(&block_hash)? {
+                Some(block) => block,
+                None => bail!("replay chain block {} not found", block_number),
+            };
+            let block_committed_info = match src_db.get_l2block_committed_info(&block_hash)? {
+                Some(info) => info,
+                None => bail!(
+                    "replay chain block committed info {} not found",
+                    block_number
+                ),
+            };
+            let global_state = match src_db.get_block_post_global_state(&block_hash)? {
+                Some(global_state) => global_state,
+                None => bail!("replay chain block global state {} not found", block_number),
+            };
+            let deposits = match src_db.get_block_deposit_requests(&block_hash)? {
+                Some(deposits) => deposits,
+                None => bail!("replay chain block deposits {} not found", block_number),
+            };
+
+            if let Some(_challenge_target) = self.dst_chain.process_block(
+                &dst_db,
+                block,
+                block_committed_info,
+                global_state,
+                deposits,
+                Default::default(),
+            )? {
+                bail!("bad block {} found", block_number);
+            }
+
+            dst_db.commit()?;
+            block_number += 1;
+        }
+
+        Ok(())
     }
 }
