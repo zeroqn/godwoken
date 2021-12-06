@@ -16,6 +16,7 @@ use gw_types::{
     packed::{self, AccountMerkleState, L2Block},
     prelude::*,
 };
+use std::collections::HashMap;
 use std::{cell::RefCell, collections::HashSet, fmt, mem::size_of_val};
 
 const FLAG_DELETE_VALUE: u8 = 0;
@@ -279,18 +280,48 @@ impl CheckPoint {
     }
 }
 
+#[derive(Clone)]
+enum Value {
+    Exist(Box<[u8]>),
+    None,
+    Deleted,
+}
+
 pub struct StateDBTransaction<'db> {
     inner: &'db StoreTransaction,
     checkpoint: CheckPoint,
     mode: StateDBMode,
+    cache: std::sync::Mutex<HashMap<Vec<u8>, Value>>,
+    deleted_value: Box<[u8]>,
 }
 
 impl<'db> KVStore for StateDBTransaction<'db> {
     fn get(&self, col: Col, key: &[u8]) -> Option<Box<[u8]>> {
+        if let Some(value) = self.cache.lock().unwrap().get(key).cloned() {
+            return match value {
+                Value::Exist(v) => Some(v),
+                Value::None => None,
+                Value::Deleted => Some(self.deleted_value.clone()),
+            };
+        }
+
         let raw_key = self.get_key_with_suffix(key);
         let mut raw_iter: DBRawIterator = self.inner.get_iter(col, IteratorMode::Start).into();
         raw_iter.seek_for_prev(raw_key);
-        self.filter_value_of_seek(key, &raw_iter)
+        match self.filter_value_of_seek(key, &raw_iter) {
+            Some(v) => {
+                let boxed = v.to_vec().into_boxed_slice();
+                self.cache
+                    .lock()
+                    .unwrap()
+                    .insert(key.to_vec(), Value::Exist(boxed));
+                Some(v)
+            }
+            None => {
+                self.cache.lock().unwrap().insert(key.to_vec(), Value::None);
+                None
+            }
+        }
     }
 
     // TODO: this trait method will be deleted in the future.
@@ -298,23 +329,36 @@ impl<'db> KVStore for StateDBTransaction<'db> {
         self.inner.get_iter(col, mode)
     }
 
-    fn insert_raw(&self, col: Col, key: &[u8], value: &[u8]) -> Result<(), Error> {
+    fn insert_raw(&self, _col: Col, key: &[u8], value: &[u8]) -> Result<(), Error> {
         assert_ne!(
             value,
             &FLAG_DELETE_VALUE.to_be_bytes(),
             "forbid inserting the delete flag"
         );
-        let raw_key = self.get_key_with_suffix(key);
-        self.inner
-            .insert_raw(col, &raw_key, value)
-            .and(self.record_block_state(col, &raw_key))
+        self.cache.lock().unwrap().insert(
+            key.to_vec(),
+            Value::Exist(value.to_vec().into_boxed_slice()),
+        );
+
+        Ok(())
+
+        // let raw_key = self.get_key_with_suffix(key);
+        // self.inner
+        //     .insert_raw(col, &raw_key, value)
+        //     .and(self.record_block_state(col, &raw_key))
     }
 
-    fn delete(&self, col: Col, key: &[u8]) -> Result<(), Error> {
-        let raw_key = self.get_key_with_suffix(key);
-        self.inner
-            .insert_raw(col, &raw_key, &FLAG_DELETE_VALUE.to_be_bytes())
-            .and(self.record_block_state(col, &raw_key))
+    fn delete(&self, _col: Col, key: &[u8]) -> Result<(), Error> {
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(key.to_vec(), Value::Deleted);
+
+        Ok(())
+        // let raw_key = self.get_key_with_suffix(key);
+        // self.inner
+        //     .insert_raw(col, &raw_key, &FLAG_DELETE_VALUE.to_be_bytes())
+        //     .and(self.record_block_state(col, &raw_key))
     }
 }
 
@@ -337,6 +381,8 @@ impl<'db> StateDBTransaction<'db> {
             inner,
             checkpoint,
             mode,
+            cache: Default::default(),
+            deleted_value: FLAG_DELETE_VALUE.to_be_bytes().to_vec().into_boxed_slice(),
         })
     }
 

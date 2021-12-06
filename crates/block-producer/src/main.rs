@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{App, Arg, SubCommand};
+use gw_block_producer::replay_block::replay;
 use gw_block_producer::{db_block_validator, runner};
 use gw_config::Config;
 use gw_version::Version;
@@ -8,6 +9,7 @@ use std::{fs, path::Path};
 const COMMAND_RUN: &str = "run";
 const COMMAND_EXAMPLE_CONFIG: &str = "generate-example-config";
 const COMMAND_VERIFY_DB_BLOCK: &str = "verify-db-block";
+const COMMAND_REPLAY_BLOCK: &str = "replay-block";
 const ARG_OUTPUT_PATH: &str = "output-path";
 const ARG_CONFIG: &str = "config";
 const ARG_SKIP_CONFIG_CHECK: &str = "skip-config-check";
@@ -90,6 +92,26 @@ fn run_cli() -> Result<()> {
                         .help("To block number"),
                 )
                 .display_order(2),
+        )
+        .subcommand(
+            SubCommand::with_name(COMMAND_REPLAY_BLOCK)
+                .about("Replay a db block")
+                .arg(
+                    Arg::with_name(ARG_CONFIG)
+                        .short("c")
+                        .takes_value(true)
+                        .required(true)
+                        .default_value("./config.toml")
+                        .help("The config file path"),
+                )
+                .arg(
+                    Arg::with_name("block-number")
+                        .short("b")
+                        .takes_value(true)
+                        .required(true)
+                        .help("block number"),
+                )
+                .display_order(3),
         );
 
     // handle subcommands
@@ -110,6 +132,16 @@ fn run_cli() -> Result<()> {
             let from_block: Option<u64> = m.value_of(ARG_FROM_BLOCK).map(str::parse).transpose()?;
             let to_block: Option<u64> = m.value_of(ARG_TO_BLOCK).map(str::parse).transpose()?;
             db_block_validator::verify(config, from_block, to_block)?;
+        }
+        (COMMAND_REPLAY_BLOCK, Some(m)) => {
+            let config_path = m.value_of(ARG_CONFIG).unwrap();
+            let config = read_config(&config_path)?;
+            let block_number: u64 = m
+                .value_of("block-number")
+                .map(str::parse)
+                .transpose()?
+                .expect("block number");
+            replay(config, block_number)?;
         }
         _ => {
             // default command: start a Godwoken node
