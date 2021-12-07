@@ -718,8 +718,7 @@ impl Chain {
                         .get_block_post_global_state(&last_valid_tip_block_hash)?
                         .expect("last valid tip global state should exists");
 
-                    let local_reverted_block_root: H256 =
-                        local_state_global_state.reverted_block_root().unpack();
+                    let local_reverted_block_root: H256 = db.get_reverted_block_smt_root()?;
                     let last_valid_tip_reverted_block_root: H256 =
                         last_valid_tip_global_state.reverted_block_root().unpack();
 
