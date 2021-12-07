@@ -653,6 +653,13 @@ impl MemPool {
             // Repackage deposits
             let deposit_cells: Vec<_> = deposits.cloned().collect();
             let deposits: Vec<_> = deposit_cells.iter().map(|i| i.request.clone()).collect();
+
+            log::info!(
+                "repackage deposits: mem block {} repackage {}",
+                mem_block.deposits().len(),
+                deposits.len()
+            );
+
             mem_state.apply_deposit_requests(self.generator.rollup_context(), &deposits)?;
             let prev_state_checkpoint = mem_state.calculate_state_checkpoint()?;
             new_mem_block.push_deposits(deposit_cells, prev_state_checkpoint);
