@@ -167,6 +167,7 @@ impl<S: State + CodeStore> StateExt for S {
             let sudt_id = match self.get_account_id_by_script_hash(&l2_sudt_script_hash.into())? {
                 Some(id) => id,
                 None => {
+                    log::info!("[generator] create new l2 sudt account");
                     self.insert_script(l2_sudt_script_hash.into(), l2_sudt_script);
                     self.create_account(l2_sudt_script_hash.into())?
                 }
