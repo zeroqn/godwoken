@@ -718,9 +718,15 @@ impl Chain {
                         .get_block_post_global_state(&last_valid_tip_block_hash)?
                         .expect("last valid tip global state should exists");
 
+                    let local_reverted_block_root: H256 =
+                        local_state_global_state.reverted_block_root().unpack();
+                    let last_valid_tip_reverted_block_root: H256 =
+                        last_valid_tip_global_state.reverted_block_root().unpack();
+
                     if local_state_tip_hash == last_valid_tip_block_hash
                         && local_state_global_state.as_slice()
                             == last_valid_tip_global_state.as_slice()
+                        && local_reverted_block_root == last_valid_tip_reverted_block_root
                     {
                         log::error!("no need to rewind");
                         // No need to rewind
@@ -733,10 +739,7 @@ impl Chain {
                     // after sync complete.
 
                     // Rewind reverted block smt to last valid tip in db
-                    let mut current_reverted_block_root: H256 =
-                        local_state_global_state.reverted_block_root().unpack();
-                    let last_valid_tip_reverted_block_root: H256 =
-                        last_valid_tip_global_state.reverted_block_root().unpack();
+                    let mut current_reverted_block_root = local_reverted_block_root;
                     log::info!(
                         "current reverted block root {:?}",
                         current_reverted_block_root
@@ -778,7 +781,9 @@ impl Chain {
                     let mut current_block_hash: H256 =
                         local_state_global_state.tip_block_hash().unpack();
                     while current_block_hash != last_valid_tip_block_hash {
+                        log::info!("try rewind block hash");
                         if current_block_hash == genesis_hash {
+                            log::info!("block hash reach genesis");
                             break;
                         }
 
@@ -787,6 +792,7 @@ impl Chain {
                             .expect("rewind block should exists");
 
                         db.rewind_block_smt(&block)?;
+                        log::info!("rewind block hash {:?}", block.hash());
                         current_block_hash = block.raw().parent_block_hash().unpack();
                     }
                     assert_eq!(current_block_hash, last_valid_tip_block_hash);
