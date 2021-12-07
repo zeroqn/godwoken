@@ -67,6 +67,30 @@ impl ChainUpdater {
         // Always start from last valid tip on l1
         if !self.initialized {
             self.revert_to_valid_tip_on_l1().await?;
+            let (
+                local_tip_block_number,
+                local_tip_block_hash,
+                committed_l1_block_number,
+                committed_l1_block_hash,
+            ) = {
+                let chain = self.chain.lock().await;
+                let local_tip_block = chain.local_state().tip().raw();
+                let local_tip_committed_info = chain.local_state().last_synced();
+                (
+                    Unpack::<u64>::unpack(&local_tip_block.number()),
+                    Into::<ckb_types::H256>::into(local_tip_block.hash()),
+                    Unpack::<u64>::unpack(&local_tip_committed_info.number()),
+                    ckb_types::H256(local_tip_committed_info.block_hash().unpack()),
+                )
+            };
+
+            log::warn!(
+                "revert to l2 block number {} hash {} on l1 block number {} hash {}",
+                local_tip_block_number,
+                local_tip_block_hash,
+                committed_l1_block_number,
+                committed_l1_block_hash
+            );
             self.initialized = true;
         }
 
