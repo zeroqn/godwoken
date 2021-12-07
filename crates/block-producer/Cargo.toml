@@ -33,6 +33,7 @@ ckb-crypto = "0.100.0"
 ckb-fixed-hash = "0.100.0"
 ckb-types = "0.100.0"
 ckb-chain-spec = "0.100.0"
+tikv-jemallocator = { version = "0.4", features = ["profiling", "stats"]}
 toml = "0.5"
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
