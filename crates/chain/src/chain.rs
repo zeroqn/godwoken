@@ -722,6 +722,7 @@ impl Chain {
                         && local_state_global_state.as_slice()
                             == last_valid_tip_global_state.as_slice()
                     {
+                        log::error!("no need to rewind");
                         // No need to rewind
                         return Ok(());
                     }
@@ -736,6 +737,14 @@ impl Chain {
                         local_state_global_state.reverted_block_root().unpack();
                     let last_valid_tip_reverted_block_root: H256 =
                         last_valid_tip_global_state.reverted_block_root().unpack();
+                    log::info!(
+                        "current reverted block root {:?}",
+                        current_reverted_block_root
+                    );
+                    log::info!(
+                        "last valid tip reverted block root {:?}",
+                        last_valid_tip_block_hash
+                    );
                     let genesis_hash = db.get_block_hash_by_number(0)?.expect("genesis hash");
                     let genesis_reverted_block_root: H256 = {
                         let genesis_global_state = db
@@ -745,6 +754,7 @@ impl Chain {
                     };
                     while current_reverted_block_root != last_valid_tip_reverted_block_root {
                         if current_reverted_block_root == genesis_reverted_block_root {
+                            log::info!("finish rewind revert block root");
                             break;
                         }
 
@@ -754,6 +764,10 @@ impl Chain {
 
                         db.rewind_reverted_block_smt(reverted_block_hashes)?;
                         current_reverted_block_root = db.get_reverted_block_smt_root()?;
+                        log::info!(
+                            "current reverted block root {:?}",
+                            current_reverted_block_root
+                        );
                     }
                     assert_eq!(
                         current_reverted_block_root,
