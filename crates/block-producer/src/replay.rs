@@ -100,6 +100,10 @@ pub async fn check_block_through_l1(
 
     let parent_block_hash = block.raw().parent_block_hash().unpack();
     let parent_block_committed_info = db.get_l2block_committed_info(&parent_block_hash)?.unwrap();
+    log::info!(
+        "parent block hash {}",
+        ckb_types::H256(parent_block_hash.into())
+    );
 
     let rollup_type_script =
         ckb_types::packed::Script::new_unchecked(base.rollup_type_script.as_bytes());
