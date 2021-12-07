@@ -432,7 +432,13 @@ impl ReplayBlock {
         let deposits = db
             .get_block_deposit_requests(&block.hash().into())?
             .unwrap_or_default();
-        state.apply_deposit_requests(generator.rollup_context(), deposits.as_slice())?;
+        log::info!("deposits {}", deposits.len());
+        for (idx, deposit) in deposits.into_iter().enumerate() {
+            state.apply_deposit_requests(generator.rollup_context(), &[deposit])?;
+            let checkpoint = ckb_types::H256(state.calculate_state_checkpoint()?.into());
+            log::info!("depoist {} checkpoint {}", idx, checkpoint);
+        }
+        // state.apply_deposit_requests(generator.rollup_context(), deposits.as_slice())?;
         let prev_txs_state = state.get_merkle_state();
         let expected_prev_txs_state_checkpoint = calculate_state_checkpoint(
             &prev_txs_state.merkle_root().unpack(),
