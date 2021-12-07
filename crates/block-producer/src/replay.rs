@@ -378,7 +378,7 @@ impl ReplayBlock {
             };
         }
 
-        let account_state = {
+        let mut account_state = {
             let parent_number = block_number.saturating_sub(1);
             let state_db = StateDBTransaction::from_checkpoint(
                 db,
@@ -411,7 +411,7 @@ impl ReplayBlock {
                 request,
             )?;
 
-            let account_state = state.get_merkle_state();
+            account_state = state.get_merkle_state();
             let expected_checkpoint = calculate_state_checkpoint(
                 &account_state.merkle_root().unpack(),
                 account_state.count().unpack(),
@@ -440,6 +440,8 @@ impl ReplayBlock {
         }
         // state.apply_deposit_requests(generator.rollup_context(), deposits.as_slice())?;
         let prev_txs_state = state.get_merkle_state();
+        account_state = prev_txs_state.clone();
+
         let expected_prev_txs_state_checkpoint = calculate_state_checkpoint(
             &prev_txs_state.merkle_root().unpack(),
             prev_txs_state.count().unpack(),
@@ -526,7 +528,7 @@ impl ReplayBlock {
             }
 
             state.apply_run_result(&run_result)?;
-            let account_state = state.get_merkle_state();
+            account_state = state.get_merkle_state();
 
             let expected_checkpoint = calculate_state_checkpoint(
                 &account_state.merkle_root().unpack(),
