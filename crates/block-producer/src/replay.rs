@@ -58,7 +58,7 @@ pub fn replay_block(config: &Config, block_number: u64) -> Result<(), ReplayErro
     let base = BaseInitComponents::init(config, true)?;
     log::info!("init complete");
 
-    smol::block_on(check_block_through_l1(&base, config, block_number))?;
+    // smol::block_on(check_block_through_l1(&base, config, block_number))?;
 
     let replay = ReplayBlock {
         store: base.store,
@@ -389,8 +389,14 @@ impl ReplayBlock {
             state.get_merkle_state()
         };
 
+        if account_state.as_slice() != raw_block.prev_account().as_slice() {
+            return Err(anyhow!("block prev account not match").into());
+        }
+
         // apply withdrawal to state
         let withdrawal_requests: Vec<_> = block.withdrawals().into_iter().collect();
+        log::info!("block withdrawals {}", withdrawal_requests.len());
+
         let block_producer_id: u32 = block_info.block_producer_id().unpack();
         let state_checkpoint_list: Vec<H256> = raw_block.state_checkpoint_list().unpack();
 
