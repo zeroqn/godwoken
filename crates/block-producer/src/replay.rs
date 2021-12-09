@@ -59,7 +59,7 @@ pub fn replay_block(config: &Config, block_number: u64) -> Result<(), ReplayErro
     let base = BaseInitComponents::init(config, true)?;
     log::info!("init complete");
 
-    smol::block_on(check_block_through_l1(&base, config, block_number))?;
+    // smol::block_on(check_block_through_l1(&base, config, block_number))?;
 
     let replay = ReplayBlock {
         store: base.store,
@@ -537,20 +537,25 @@ impl ReplayBlock {
             state.apply_run_result(&run_result)?;
             account_state = state.get_merkle_state();
 
-            let expected_checkpoint = calculate_state_checkpoint(
-                &account_state.merkle_root().unpack(),
-                account_state.count().unpack(),
-            );
-            let checkpoint_index = withdrawal_requests.len() + tx_index;
-            let block_checkpoint: H256 = match state_checkpoint_list.get(checkpoint_index) {
-                Some(checkpoint) => *checkpoint,
-                None => return Err(anyhow!("tx {} checkpoint not found", tx_index).into()),
-            };
-
-            if block_checkpoint != expected_checkpoint {
-                return Err(anyhow!("tx {} checkpoint not match", tx_index).into());
-            }
+            // let expected_checkpoint = calculate_state_checkpoint(
+            //     &account_state.merkle_root().unpack(),
+            //     account_state.count().unpack(),
+            // );
+            // let checkpoint_index = withdrawal_requests.len() + tx_index;
+            // let block_checkpoint: H256 = match state_checkpoint_list.get(checkpoint_index) {
+            //     Some(checkpoint) => *checkpoint,
+            //     None => return Err(anyhow!("tx {} checkpoint not found", tx_index).into()),
+            // };
+            //
+            // if block_checkpoint != expected_checkpoint {
+            //     return Err(anyhow!("tx {} checkpoint not match", tx_index).into());
+            // }
         }
+
+        let account_count: u32 = account_state.count().unpack();
+        let block_count: u32 = raw_block.post_account().count().unpack();
+        log::info!("state account count {}", account_count);
+        log::info!("block account count {}", block_count);
 
         Ok(None)
     }
