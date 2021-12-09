@@ -149,7 +149,7 @@ impl StoreTransaction {
             COLUMN_BLOCK_STATE_RECORD,
             IteratorMode::From(start_key.as_slice(), Direction::Forward),
         )
-        // .filter(|(key, _value)| key.len() == 40)
+        .filter(|(key, _value)| key.len() == 40)
         .map(|(key, _value)| BlockStateRecordKey::from_slice(&key))
         .take_while(move |key| key.block_number() == block_number)
     }
@@ -179,9 +179,6 @@ impl BlockStateRecordKey {
     }
 
     pub fn from_slice(bytes: &[u8]) -> Self {
-        if bytes.len() != 40 {
-            log::error!("bytes {:?}", bytes);
-        }
         let mut inner = [0u8; 40];
         inner.copy_from_slice(bytes);
         BlockStateRecordKey(inner)
