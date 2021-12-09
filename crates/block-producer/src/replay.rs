@@ -412,8 +412,8 @@ impl ReplayBlock {
                 } else {
                     let block_hash = db.get_block_hash_by_number(block).unwrap().unwrap();
                     let block_ = db.get_block(&block_hash).unwrap().unwrap();
-                    let prev = block_.raw().prev_account().count().unpack();
-                    let post = block_.raw().post_account().count().unpack();
+                    let prev: u32 = block_.raw().prev_account().count().unpack();
+                    let post: u32 = block_.raw().post_account().count().unpack();
                     log::info!("block {} prev {} post {}", block, prev, post);
                     break;
                 }
