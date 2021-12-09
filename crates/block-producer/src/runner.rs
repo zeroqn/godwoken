@@ -513,7 +513,7 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
         if script_hash != H256::zero() {
             log::info!("account 3953 exit in block {}", tip_block_number);
         }
-        let tree = db.state_tree(StateContext::ReadOnlyHistory(tip_block_number))?;
+        let tree = db.state_tree(StateContext::ReadOnlyHistory(45413))?;
         let script_hash = tree.get_script_hash(3953)?;
         if script_hash != H256::zero() {
             log::info!("account 3953 exit in block {}", tip_block_number);
