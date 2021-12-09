@@ -502,7 +502,7 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
         let mut raw_iter: DBRawIterator = db
             .get_iter(
                 COLUMN_BLOCK_STATE_REVERSE_RECORD,
-                IteratorMode::From(key.as_slice(), Direction::Forward),
+                IteratorMode::From(state_key.as_slice(), Direction::Forward),
             )
             .into();
         while raw_iter.valid() {
