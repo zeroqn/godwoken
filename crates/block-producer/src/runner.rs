@@ -486,9 +486,9 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
                 log::info!("account 3953 exit in block {}", block);
                 break;
             }
-            let script_hash = tree.get_script_hash(3954)?;
+            let script_hash = tree.get_script_hash(3952)?;
             if script_hash != H256::zero() {
-                log::info!("account 3954 exit in block {}", block);
+                log::info!("account 3952 exit in block {}", block);
                 break;
             }
             block = block.saturating_add(1);
