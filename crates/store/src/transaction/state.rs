@@ -149,6 +149,7 @@ impl StoreTransaction {
             COLUMN_BLOCK_STATE_RECORD,
             IteratorMode::From(start_key.as_slice(), Direction::Forward),
         )
+        .filter(|(key, _value)| key.len() == 40)
         .map(|(key, _value)| BlockStateRecordKey::from_slice(&key))
         .take_while(move |key| key.block_number() == block_number)
     }
