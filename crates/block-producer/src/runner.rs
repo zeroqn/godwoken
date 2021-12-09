@@ -485,23 +485,23 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
         let mut tip_block_number = tip_block.raw().number().unpack();
         log::info!("tip block number {}", tip_block_number);
 
-        // while tip_block_number > 45415 {
-        //     let db = store.begin_transaction();
-        //     let l2block = db.get_tip_block()?;
-        //     let number: u64 = l2block.raw().number().unpack();
-        //     log::info!("detach #{}", number);
-        //     // detach block from DB
-        //     db.detach_block(&l2block)?;
-        //     // detach block state from state tree
-        //     {
-        //         let mut tree =
-        //             db.state_tree(StateContext::DetachBlock(l2block.raw().number().unpack()))?;
-        //         tree.detach_block_state()?;
-        //     }
-        //     db.commit()?;
-        //
-        //     tip_block_number = tip_block_number.saturating_sub(1);
-        // }
+        while tip_block_number > 45412 {
+            let db = store.begin_transaction();
+            let l2block = db.get_tip_block()?;
+            let number: u64 = l2block.raw().number().unpack();
+            log::info!("detach #{}", number);
+            // detach block from DB
+            db.detach_block(&l2block)?;
+            // detach block state from state tree
+            {
+                let mut tree =
+                    db.state_tree(StateContext::DetachBlock(l2block.raw().number().unpack()))?;
+                tree.detach_block_state()?;
+            }
+            db.commit()?;
+
+            tip_block_number = tip_block_number.saturating_sub(1);
+        }
 
         let prev_count: u32 = tip_block.raw().prev_account().count().unpack();
         let post_count: u32 = tip_block.raw().post_account().count().unpack();
@@ -513,11 +513,11 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
         if script_hash != H256::zero() {
             log::info!("account 3953 exit in block {}", tip_block_number);
         }
-        let tree = db.state_tree(StateContext::ReadOnlyHistory(45413))?;
-        let script_hash = tree.get_script_hash(3953)?;
-        if script_hash != H256::zero() {
-            log::info!("account 3953 exit in block {}", tip_block_number);
-        }
+        // let tree = db.state_tree(StateContext::ReadOnlyHistory(45413))?;
+        // let script_hash = tree.get_script_hash(3953)?;
+        // if script_hash != H256::zero() {
+        //     log::info!("account 3953 exit in block {}", tip_block_number);
+        // }
 
         // let state_key = build_account_field_key(3953, GW_ACCOUNT_SCRIPT_HASH_TYPE);
         // let key = BlockStateRecordKeyReverse::new(180083, &state_key);
