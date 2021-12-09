@@ -8,7 +8,7 @@ use ckb_types::core::hardfork::HardForkSwitch;
 use gw_chain::chain::Chain;
 use gw_challenge::offchain::OffChainMockContext;
 use gw_ckb_hardfork::{GLOBAL_CURRENT_EPOCH_NUMBER, GLOBAL_HARDFORK_SWITCH, GLOBAL_VM_VERSION};
-use gw_common::{blake2b::new_blake2b, H256};
+use gw_common::{blake2b::new_blake2b, state::State, H256};
 use gw_config::{BlockProducerConfig, Config, NodeMode};
 use gw_db::{schema::COLUMNS, RocksDB};
 use gw_generator::{
@@ -26,7 +26,7 @@ use gw_mem_pool::{
 use gw_poa::PoA;
 use gw_rpc_client::rpc_client::RPCClient;
 use gw_rpc_server::{registry::Registry, server::start_jsonrpc_server};
-use gw_store::Store;
+use gw_store::{state::state_db::StateContext, Store};
 use gw_types::{
     bytes::Bytes,
     offchain::RollupContext,
@@ -466,6 +466,21 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
         store,
         generator,
     } = base;
+
+    {
+        let db = store.begin_transaction();
+        let mut block = 45410u64;
+        log::info!("loop from block {} to found account 3953", block);
+        loop {
+            let tree = db.state_tree(StateContext::ReadOnlyHistory(block))?;
+            let script_hash = tree.get_script_hash(3953)?;
+            if script_hash == H256::zero() {
+                log::info!("account 3953 no exit in block {}", block);
+                break;
+            }
+            block = block.saturating_sub(1);
+        }
+    }
 
     // check state db
     {
