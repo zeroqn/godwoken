@@ -399,6 +399,8 @@ impl ReplayBlock {
         if account_state.as_slice() != raw_block.prev_account().as_slice() {
             return Err(anyhow!("block prev account not match").into());
         }
+        let block_account_count: u32 = account_state.count().unpack();
+        log::info!("block account count {}", block_account_count);
 
         // apply withdrawal to state
         let withdrawal_requests: Vec<_> = block.withdrawals().into_iter().collect();
@@ -457,17 +459,17 @@ impl ReplayBlock {
             .submit_transactions()
             .prev_state_checkpoint()
             .unpack();
-        if block_prev_txs_state_checkpoint != expected_prev_txs_state_checkpoint {
-            log::error!(
-                "block prev txs checkpoint {}",
-                ckb_types::H256(block_prev_txs_state_checkpoint.into())
-            );
-            log::error!(
-                "replay prev txs checkpoint {}",
-                ckb_types::H256(expected_prev_txs_state_checkpoint.into())
-            );
-            return Err(anyhow!("prev txs state checkpoint not match").into());
-        }
+        // if block_prev_txs_state_checkpoint != expected_prev_txs_state_checkpoint {
+        //     log::error!(
+        //         "block prev txs checkpoint {}",
+        //         ckb_types::H256(block_prev_txs_state_checkpoint.into())
+        //     );
+        //     log::error!(
+        //         "replay prev txs checkpoint {}",
+        //         ckb_types::H256(expected_prev_txs_state_checkpoint.into())
+        //     );
+        //     return Err(anyhow!("prev txs state checkpoint not match").into());
+        // }
 
         // handle transactions
         let chain_view = ChainView::new(db, parent_block_hash);
