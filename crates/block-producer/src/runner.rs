@@ -478,12 +478,15 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
     } = base;
 
     {
-        let db = store.begin_transaction();
-        let tip_block = db.get_tip_block()?;
-        let mut tip_block_number = tip_block.raw().number().unpack();
+        let mut tip_block_number = {
+            let db = store.begin_transaction();
+            let tip_block = db.get_tip_block()?;
+            tip_block.raw().number().unpack()
+        };
         log::info!("tip block number {}", tip_block_number);
 
         while tip_block_number > 45415 {
+            let db = store.begin_transaction();
             let l2block = db.get_tip_block()?;
             let number: u64 = l2block.raw().number().unpack();
             log::info!("detach #{}", number);
@@ -497,7 +500,7 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
             }
             db.commit()?;
 
-            tip_block_number = db.get_tip_block()?.raw().number().unpack();
+            tip_block_number = tip_block_number.saturating_sub(1);
         }
 
         // let prev_count: u32 = tip_block.raw().prev_account().count().unpack();
