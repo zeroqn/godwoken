@@ -469,7 +469,7 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
 
     {
         let db = store.begin_transaction();
-        let mut block = 4700u64;
+        let mut block = 45410u64;
         log::info!("loop from block {} to found account 3953", block);
         loop {
             let block_hash = db.get_block_hash_by_number(block)?.expect("block hash");
@@ -481,11 +481,11 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
 
             let tree = db.state_tree(StateContext::ReadOnlyHistory(block))?;
             let script_hash = tree.get_script_hash(3953)?;
-            if script_hash == H256::zero() {
-                log::info!("account 3953 no exit in block {}", block);
+            if script_hash != H256::zero() {
+                log::info!("account 3953 exit in block {}", block);
                 break;
             }
-            block = block.saturating_sub(1);
+            block = block.saturating_add(1);
         }
     }
     panic!("enough");
