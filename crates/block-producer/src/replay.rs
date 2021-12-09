@@ -480,17 +480,17 @@ impl ReplayBlock {
 
             // check nonce
             let raw_tx = tx.raw();
-            let expected_nonce = state.get_nonce(raw_tx.from_id().unpack())?;
-            let actual_nonce: u32 = raw_tx.nonce().unpack();
-            if actual_nonce != expected_nonce {
-                return Err(anyhow!(
-                    "tx {} nonce not match, expected {} actual {}",
-                    tx_index,
-                    expected_nonce,
-                    actual_nonce
-                )
-                .into());
-            }
+            // let expected_nonce = state.get_nonce(raw_tx.from_id().unpack())?;
+            // let actual_nonce: u32 = raw_tx.nonce().unpack();
+            // if actual_nonce != expected_nonce {
+            //     return Err(anyhow!(
+            //         "tx {} nonce not match, expected {} actual {}",
+            //         tx_index,
+            //         expected_nonce,
+            //         actual_nonce
+            //     )
+            //     .into());
+            // }
 
             // build call context
             // NOTICE users only allowed to send HandleMessage CallType txs
