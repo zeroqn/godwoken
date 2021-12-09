@@ -507,7 +507,9 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
             .into();
         while raw_iter.valid() {
             let key = raw_iter.key();
-            log::info!("found key {:?}", key);
+            if key.map(|key| &key[..32]) == Some(state_key.as_slice()) {
+                log::info!("found key {:?}", key);
+            }
             raw_iter.next();
         }
 
