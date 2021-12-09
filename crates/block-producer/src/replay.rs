@@ -396,6 +396,35 @@ impl ReplayBlock {
             state.get_merkle_state()
         };
 
+        {
+            let mut block = 45420;
+            loop {
+                let state_db = StateDBTransaction::from_checkpoint(
+                    db,
+                    CheckPoint::new(block, SubState::Block),
+                    StateDBMode::ReadOnly,
+                )?;
+                let state = &mut get_state!(state_db);
+
+                let account_script_hash = state.get_script_hash(3953)?;
+                if account_script_hash != H256::zero() {
+                    log::info!("found 3953 in block {}", block);
+                } else {
+                    let block_hash = db.get_block_hash_by_number(block).unwrap().unwrap();
+                    let block_ = db.get_block(&block_hash).unwrap().unwrap();
+                    let prev = block_.raw().prev_account().count().unpack();
+                    let post = block_.raw().post_account().count().unpack();
+                    log::info!("block {} prev {} post {}", block, prev, post);
+                    break;
+                }
+                block = block.saturating_sub(1);
+                if block == 45300 {
+                    log::info!("reach block {} break", block);
+                    break;
+                }
+            }
+        }
+
         if account_state.as_slice() != raw_block.prev_account().as_slice() {
             return Err(anyhow!("block prev account not match").into());
         }
