@@ -8,9 +8,16 @@ use ckb_types::core::hardfork::HardForkSwitch;
 use gw_chain::chain::Chain;
 use gw_challenge::offchain::OffChainMockContext;
 use gw_ckb_hardfork::{GLOBAL_CURRENT_EPOCH_NUMBER, GLOBAL_HARDFORK_SWITCH, GLOBAL_VM_VERSION};
-use gw_common::{blake2b::new_blake2b, state::State, H256};
+use gw_common::{
+    blake2b::new_blake2b,
+    state::{build_account_field_key, State, GW_ACCOUNT_SCRIPT_HASH_TYPE},
+    H256,
+};
 use gw_config::{BlockProducerConfig, Config, NodeMode};
-use gw_db::{schema::COLUMNS, RocksDB};
+use gw_db::{
+    schema::{COLUMNS, COLUMN_BLOCK_STATE_REVERSE_RECORD},
+    DBRawIterator, Direction, IteratorMode, RocksDB,
+};
 use gw_generator::{
     account_lock_manage::{
         secp256k1::{Secp256k1Eth, Secp256k1Tron},
@@ -26,7 +33,10 @@ use gw_mem_pool::{
 use gw_poa::PoA;
 use gw_rpc_client::rpc_client::RPCClient;
 use gw_rpc_server::{registry::Registry, server::start_jsonrpc_server};
-use gw_store::{state::state_db::StateContext, Store};
+use gw_store::{
+    state::state_db::StateContext, traits::KVStore, transaction::state::BlockStateRecordKeyReverse,
+    Store,
+};
 use gw_types::{
     bytes::Bytes,
     offchain::RollupContext,
@@ -485,6 +495,20 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
         let script_hash = tree.get_script_hash(3953)?;
         if script_hash != H256::zero() {
             log::info!("account 3953 exit in block {}", tip_block_number);
+        }
+
+        let state_key = build_account_field_key(3953, GW_ACCOUNT_SCRIPT_HASH_TYPE);
+        let key = BlockStateRecordKeyReverse::new(180083, &state_key);
+        let mut raw_iter: DBRawIterator = db
+            .get_iter(
+                COLUMN_BLOCK_STATE_REVERSE_RECORD,
+                IteratorMode::From(key.as_slice(), Direction::Forward),
+            )
+            .into();
+        while raw_iter.valid() {
+            let key = raw_iter.key();
+            log::info!("found key {:?}", key);
+            raw_iter.next();
         }
 
         // let mut block = 45406u64;
