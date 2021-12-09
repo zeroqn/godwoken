@@ -469,9 +469,10 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
 
     {
         let db = store.begin_transaction();
-        let mut block = 45410u64;
+        let mut block = 45300u64;
         log::info!("loop from block {} to found account 3953", block);
         loop {
+            log::info!("block {}", block);
             let block_hash = db.get_block_hash_by_number(block)?.expect("block hash");
             let block_ = db.get_block(&block_hash)?.expect("block");
             let prev_count: u32 = block_.raw().prev_account().count().unpack();
