@@ -397,7 +397,7 @@ impl ReplayBlock {
         };
 
         {
-            let mut block = 45420;
+            let mut block = 45408;
             loop {
                 let state_db = StateDBTransaction::from_checkpoint(
                     db,
