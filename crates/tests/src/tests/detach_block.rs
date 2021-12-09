@@ -65,9 +65,16 @@ fn test_detach_block() {
 
     let db = chain.store().begin_transaction();
     let tree = db.state_tree(StateContext::ReadOnly).unwrap();
+    assert_ne!(tree.get_script_hash(2), Ok(H256::zero()));
+
     let account_count = tree.get_account_count().unwrap();
     assert_eq!(account_count, 3);
     assert_eq!(tree.get_script_hash(account_count).unwrap(), H256::zero());
+
+    let tree = db.state_tree(StateContext::ReadOnlyHistory(1)).unwrap();
+    assert_ne!(tree.get_script_hash(2), Ok(H256::zero()));
+    // let tree = db.state_tree(StateContext::ReadOnlyHistory(0)).unwrap();
+    // assert_ne!(tree.get_script_hash(2), Ok(H256::zero()));
 
     let tip_block = db.get_tip_block().unwrap();
 
@@ -86,32 +93,4 @@ fn test_detach_block() {
     let account_count = tree.get_account_count().unwrap();
     assert_eq!(account_count, 2);
     assert_eq!(tree.get_script_hash(account_count).unwrap(), H256::zero());
-}
-
-fn construct_deposit_block(chain: &Chain, deposits_size: usize) -> ProduceBlockResult {
-    let db = chain.store().begin_transaction();
-    let tree = db.state_tree(StateContext::ReadOnly).unwrap();
-    let account_count = tree.get_account_count().unwrap();
-
-    let munt count = account_count;
-    while count < count + deposits_size {
-    let alice_script = Script::new_builder()
-        .code_hash(ALWAYS_SUCCESS_CODE_HASH.pack())
-        .hash_type(ScriptHashType::Type.into())
-        .args({
-            let mut args = rollup_script_hash.as_slice().to_vec();
-            args.push(42);
-            args.pack()
-        })
-        .build();
-    let deposit = DepositRequest::new_builder()
-        .capacity((4000u64 * CKB).pack())
-        .script(alice_script)
-        .build();
-    }
-    let block_result = {
-        let mem_pool = chain.mem_pool().as_ref().unwrap();
-        let mut mem_pool = smol::block_on(mem_pool.lock());
-        construct_block(&chain, &mut mem_pool, vec![deposit.clone()]).unwrap()
-    };
 }
