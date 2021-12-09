@@ -481,6 +481,7 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
             block = block.saturating_sub(1);
         }
     }
+    panic!("enough");
 
     // check state db
     {
