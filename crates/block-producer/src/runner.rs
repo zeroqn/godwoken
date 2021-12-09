@@ -469,7 +469,7 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
 
     {
         let db = store.begin_transaction();
-        let mut block = 45408u64;
+        let mut block = 45406u64;
         log::info!("loop from block {} to found account 3953", block);
         loop {
             log::info!("block {}", block);
@@ -487,7 +487,7 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
                 break;
             }
             block = block.saturating_add(1);
-            if block == 45411 {
+            if block == 45500 {
                 break;
             }
         }
