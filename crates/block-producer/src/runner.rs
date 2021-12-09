@@ -481,6 +481,14 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
             log::info!("block post count {}", post_count);
 
             let tree = db.state_tree(StateContext::ReadOnlyHistory(block))?;
+            loop {
+                let mut account = prev_count;
+                let script_hash = tree.get_script_hash(3953)?;
+                if script_hash != H256::zero() {
+                    log::info!("account {} exit in block {}", account, block);
+                    break;
+                }
+            }
             let script_hash = tree.get_script_hash(3953)?;
             if script_hash != H256::zero() {
                 log::info!("account 3953 exit in block {}", block);
