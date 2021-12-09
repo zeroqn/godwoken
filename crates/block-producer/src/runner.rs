@@ -488,6 +488,7 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
                     log::info!("account {} exit in block {}", account, block);
                     break;
                 }
+                account = account.saturating_sub(1);
             }
             let script_hash = tree.get_script_hash(3953)?;
             if script_hash != H256::zero() {
