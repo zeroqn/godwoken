@@ -8,9 +8,17 @@ use ckb_types::core::hardfork::HardForkSwitch;
 use gw_chain::chain::Chain;
 use gw_challenge::offchain::OffChainMockContext;
 use gw_ckb_hardfork::{GLOBAL_CURRENT_EPOCH_NUMBER, GLOBAL_HARDFORK_SWITCH, GLOBAL_VM_VERSION};
-use gw_common::{blake2b::new_blake2b, H256};
+use gw_common::{
+    blake2b::new_blake2b,
+    h256_ext::H256Ext,
+    state::{build_account_field_key, State, GW_ACCOUNT_SCRIPT_HASH_TYPE},
+    H256,
+};
 use gw_config::{BlockProducerConfig, Config, NodeMode};
-use gw_db::{schema::COLUMNS, RocksDB};
+use gw_db::{
+    schema::{COLUMNS, COLUMN_BLOCK_STATE_RECORD, COLUMN_BLOCK_STATE_REVERSE_RECORD},
+    RocksDB,
+};
 use gw_generator::{
     account_lock_manage::{
         secp256k1::{Secp256k1Eth, Secp256k1Tron},
@@ -18,6 +26,7 @@ use gw_generator::{
     },
     backend_manage::BackendManage,
     genesis::init_genesis,
+    traits::StateExt,
     Generator,
 };
 use gw_mem_pool::{
@@ -26,7 +35,12 @@ use gw_mem_pool::{
 use gw_poa::PoA;
 use gw_rpc_client::rpc_client::RPCClient;
 use gw_rpc_server::{registry::Registry, server::start_jsonrpc_server};
-use gw_store::Store;
+use gw_store::{
+    state::state_db::StateContext,
+    traits::KVStore,
+    transaction::state::{BlockStateRecordKey, BlockStateRecordKeyReverse},
+    Store,
+};
 use gw_types::{
     bytes::Bytes,
     offchain::RollupContext,
@@ -466,6 +480,101 @@ pub fn run(config: Config, skip_config_check: bool) -> Result<()> {
         store,
         generator,
     } = base;
+
+    // TODO: Found a history account in block
+    // TODO: Build key and try to access its history key directly to check whether it exists
+    // TODO: Iter all state of that block
+
+    // {
+    //     for _ in 1..4000 {
+    //         {
+    //             let db = store.begin_transaction();
+    //             let l2block = db.get_tip_block()?;
+    //             let number: u64 = l2block.raw().number().unpack();
+    //             log::info!("detach #{}", number);
+    //             // detach block from DB
+    //             db.detach_block(&l2block)?;
+    //             // detach block state from state tree
+    //             let mut tree =
+    //                 db.state_tree(StateContext::DetachBlock(l2block.raw().number().unpack()))?;
+    //             tree.detach_block_state()?;
+    //             db.commit()?;
+    //         }
+    //
+    //         store.check_state()?;
+    //     }
+    // }
+
+    {
+        let tip_block = {
+            let db = store.begin_transaction();
+            db.get_tip_block()?
+        };
+        let tip_block_number: u64 = tip_block.raw().number().unpack();
+
+        const account_id: u32 = 3950;
+        // Fond the block create this account
+        let mut block = None;
+        {
+            let db = store.begin_transaction();
+            let get_block = |number: u64| -> Result<_> {
+                let block_hash = db.get_block_hash_by_number(number)?.unwrap();
+                Ok(db.get_block(&block_hash)?.unwrap())
+            };
+            let mut block_number = 30000;
+            loop {
+                let cur_block = get_block(block_number)?;
+                let prev_count: u32 = cur_block.raw().prev_account().count().unpack();
+                let post_count: u32 = cur_block.raw().post_account().count().unpack();
+                if account_id >= prev_count && account_id < post_count {
+                    block = Some(cur_block);
+                    break;
+                }
+                block_number += 1;
+                if block_number > tip_block_number {
+                    break;
+                }
+            }
+
+            if let Some(block) = block {
+                log::info!("found account {} in block {}", account_id, block_number);
+                log::info!("try access through tip ReadOnlyHistory Context");
+                let tree = db.state_tree(StateContext::ReadOnlyHistory(tip_block_number))?;
+                let account_hash = tree.get_script_hash(account_id)?;
+                if account_hash == H256::zero() {
+                    log::info!("account hash not found in ReadOnlyHistory tip");
+                }
+                log::info!("try access account script hash directly through key");
+                let state_key = build_account_field_key(account_id, GW_ACCOUNT_SCRIPT_HASH_TYPE);
+                let block_key = BlockStateRecordKey::new(block_number, &state_key);
+                if let Some(value) = db.get(COLUMN_BLOCK_STATE_RECORD, block_key.as_slice()) {
+                    let mut buf = [0u8; 32];
+                    buf.copy_from_slice(&value);
+                    let account_hash: H256 = buf.into();
+                    log::info!("directly access found account hash {:?}", account_hash);
+                }
+                log::info!("try iter block state record");
+                if db
+                    .iter_block_state_record(block_number)
+                    .any(|key| key.as_slice() == block_key.as_slice())
+                {
+                    log::info!("iter block state found account hash key");
+                }
+                log::info!("check block state reverse record");
+                let reverse_block_key = BlockStateRecordKeyReverse::new(block_number, &state_key);
+                if db
+                    .get(
+                        COLUMN_BLOCK_STATE_REVERSE_RECORD,
+                        reverse_block_key.as_slice(),
+                    )
+                    .is_some()
+                {
+                    log::info!("reverse block state account hash found");
+                }
+            }
+        }
+    }
+    panic!("enough");
 
     // check state db
     {

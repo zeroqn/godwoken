@@ -140,7 +140,7 @@ impl StoreTransaction {
         }
     }
 
-    pub(crate) fn iter_block_state_record(
+    pub fn iter_block_state_record(
         &self,
         block_number: u64,
     ) -> impl Iterator<Item = BlockStateRecordKey> + '_ {
@@ -155,7 +155,7 @@ impl StoreTransaction {
 }
 
 // block_number(8 bytes) | key (32 bytes)
-pub(crate) struct BlockStateRecordKey([u8; 40]);
+pub struct BlockStateRecordKey([u8; 40]);
 
 impl BlockStateRecordKey {
     pub fn new(block_number: u64, state_key: &H256) -> Self {
@@ -189,7 +189,7 @@ impl BlockStateRecordKey {
 }
 
 //  key (32 bytes) | block_number(8 bytes)
-pub(crate) struct BlockStateRecordKeyReverse([u8; 40]);
+pub struct BlockStateRecordKeyReverse([u8; 40]);
 
 impl BlockStateRecordKeyReverse {
     pub fn new(block_number: u64, state_key: &H256) -> Self {
@@ -217,7 +217,7 @@ impl BlockStateRecordKeyReverse {
         BlockStateRecordKeyReverse(inner)
     }
 
-    fn as_slice(&self) -> &[u8] {
+    pub fn as_slice(&self) -> &[u8] {
         &self.0
     }
 }
