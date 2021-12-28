@@ -52,6 +52,7 @@ const MAX_BLOCK_OUTPUT_PARAM_RETRY_COUNT: usize = 10;
 const TRANSACTION_SCRIPT_ERROR: &str = "TransactionScriptError";
 const TRANSACTION_EXCEEDED_MAXIMUM_BLOCK_BYTES_ERROR: &str = "ExceededMaximumBlockBytes";
 const TRANSACTION_FAILED_TO_RESOLVE_ERROR: &str = "TransactionFailedToResolve";
+const TRANSACTION_INVALID_CODE_HASH: &str = "InvalidCodeHash";
 /// 524_288 we choose this value because it is smaller than the MAX_BLOCK_BYTES which is 597K
 const MAX_ROLLUP_WITNESS_SIZE: usize = 1 << 19;
 const WAIT_PRODUCE_BLOCK_SECONDS: u64 = 90;
@@ -522,6 +523,12 @@ impl BlockProducer {
             }
             Err(err) => {
                 let err_str = err.to_string();
+                if err_str.contains(TRANSACTION_INVALID_CODE_HASH) {
+                    if let Err(err) = self.contracts_dep_manager.refresh().await {
+                        log::error!("[contracts dep] refresh failed {}", err);
+                    }
+                }
+
                 if err_str.contains(TRANSACTION_FAILED_TO_RESOLVE_ERROR) {
                     // TODO: check dead out point
                     if let Err(err) = self.contracts_dep_manager.refresh().await {

@@ -28,7 +28,7 @@ impl ContractsCellDepManager {
     pub async fn build(rpc_client: RPCClient, scripts: ContractTypeScriptConfig) -> Result<Self> {
         let now = Instant::now();
         let deps = query_cell_deps(&rpc_client, &scripts).await?;
-        log::trace!("[contracts dep] build {}ms", now.elapsed().as_millis());
+        log::info!("[contracts dep] build {}ms", now.elapsed().as_millis());
 
         Ok(Self {
             rpc_client,
