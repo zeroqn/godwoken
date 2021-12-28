@@ -273,7 +273,13 @@ impl BaseInitComponents {
         let mut contracts_dep_manager = None;
         if let Some(block_producer_config) = opt_block_producer_config.as_mut() {
             let script_config = &block_producer_config.contract_type_scripts;
-            if gw_rpc_client::contract::check_script(script_config, &rollup_config).is_err() {
+            if gw_rpc_client::contract::check_script(
+                script_config,
+                &rollup_config,
+                &config.chain.rollup_type_script,
+            )
+            .is_err()
+            {
                 let now = Instant::now();
                 let script_config =
                     smol::block_on(gw_rpc_client::contract::query_type_script_from_old_config(
@@ -282,7 +288,11 @@ impl BaseInitComponents {
                     ))?;
                 log::trace!("[contracts dep] old config {}ms", now.elapsed().as_millis());
 
-                gw_rpc_client::contract::check_script(&script_config, &rollup_config)?;
+                gw_rpc_client::contract::check_script(
+                    &script_config,
+                    &rollup_config,
+                    &config.chain.rollup_type_script,
+                )?;
                 block_producer_config.contract_type_scripts = script_config;
             }
 

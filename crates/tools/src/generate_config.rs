@@ -266,6 +266,16 @@ async fn query_contracts_script(
         gw_rpc_client::contract::query_type_script(&rpc_client, contract, cell_dep.into())
     };
 
+    let state_validator = query(
+        "state validator",
+        deployment.state_validator.cell_dep.clone(),
+    )
+    .await?;
+    assert_eq!(
+        state_validator.hash(),
+        deployment.state_validator.script_type_hash
+    );
+
     let deposit_lock = query("deposit", deployment.deposit_lock.cell_dep.clone()).await?;
     assert_eq!(
         deposit_lock.hash(),
@@ -345,6 +355,7 @@ async fn query_contracts_script(
     ]);
 
     Ok(ContractTypeScriptConfig {
+        state_validator,
         deposit_lock,
         stake_lock,
         custodian_lock,

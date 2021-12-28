@@ -5,7 +5,6 @@ use std::time::Instant;
 use anyhow::{anyhow, bail, Result};
 use arc_swap::{ArcSwap, Guard};
 use async_jsonrpc_client::{HttpClient, Params as ClientParams, Transport};
-use ckb_types::prelude::Entity;
 use gw_config::{BlockProducerConfig, ContractTypeScriptConfig, ContractsCellDep};
 use gw_jsonrpc_types::blockchain::{CellDep, Script};
 use gw_types::packed::RollupConfig;
@@ -56,7 +55,11 @@ impl ContractsCellDepManager {
 pub fn check_script(
     script_config: &ContractTypeScriptConfig,
     rollup_config: &RollupConfig,
+    rollup_type_script: &Script,
 ) -> Result<()> {
+    if script_config.state_validator.hash() != rollup_type_script.code_hash {
+        bail!("state validator hash not match");
+    }
     if script_config.deposit_lock.hash().pack() != rollup_config.deposit_script_type_hash() {
         bail!("deposit lock hash not match one in rollup config");
     }
@@ -108,9 +111,7 @@ pub async fn query_cell_deps(
         query_by_type_script(rpc_client, contract, type_script)
     };
 
-    let state_validator =
-        gw_types::packed::Script::new_unchecked(rpc_client.rollup_type_script.as_bytes());
-    let rollup_cell_type = query("state validator", state_validator.into()).await?;
+    let rollup_cell_type = query("state validator", script_config.state_validator.clone()).await?;
     let deposit_cell_lock = query("deposit", script_config.deposit_lock.clone()).await?;
     let stake_cell_lock = query("stake", script_config.stake_lock.clone()).await?;
     let custodian_cell_lock = query("custodian", script_config.custodian_lock.clone()).await?;
@@ -181,6 +182,7 @@ pub async fn query_type_script_from_old_config(
         query_type_script(&rpc_client.ckb, contract, cell_dep)
     };
 
+    let state_validator = query("state validator", config.rollup_cell_type_dep.clone()).await?;
     let deposit_lock = query("deposit lock", config.deposit_cell_lock_dep.clone()).await?;
     let stake_lock = query("stake lock", config.stake_cell_lock_dep.clone()).await?;
     let custodian_lock = query("custodian lock", config.custodian_cell_lock_dep.clone()).await?;
@@ -201,6 +203,7 @@ pub async fn query_type_script_from_old_config(
     }
 
     Ok(ContractTypeScriptConfig {
+        state_validator,
         deposit_lock,
         stake_lock,
         custodian_lock,

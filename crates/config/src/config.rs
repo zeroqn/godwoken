@@ -111,6 +111,7 @@ pub struct ChallengerConfig {
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContractTypeScriptConfig {
+    pub state_validator: Script,
     pub deposit_lock: Script,
     pub stake_lock: Script,
     pub custodian_lock: Script,
