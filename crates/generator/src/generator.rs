@@ -29,6 +29,7 @@ use gw_common::{
     H256,
 };
 use gw_config::RPCConfig;
+use gw_runtime::block_on;
 use gw_store::{state::state_db::StateContext, transaction::StoreTransaction};
 use gw_traits::{ChainView, CodeStore};
 use gw_tx_filter::polyjuice_contract_creator_allowlist::PolyjuiceContractCreatorAllowList;
@@ -176,7 +177,7 @@ impl Generator {
 
         {
             let t = Instant::now();
-            let global_vm_version = smol::block_on(async { *GLOBAL_VM_VERSION.lock().await });
+            let global_vm_version = block_on(async { *GLOBAL_VM_VERSION.lock().await });
             let vm_version = match global_vm_version {
                 0 => VMVersion::V0,
                 1 => VMVersion::V1,
