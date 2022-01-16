@@ -25,7 +25,6 @@ members = [
   "crates/ckb-hardfork",
   "crates/tx-filter",
   "crates/replay-chain",
-  "crates/runtime"
 ]
 
 [profile.release]

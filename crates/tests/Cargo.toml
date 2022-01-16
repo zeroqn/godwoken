@@ -21,7 +21,6 @@ gw-block-producer = { path = "../block-producer" }
 gw-rpc-server = { path = "../rpc-server" }
 gw-rpc-client = { path = "../rpc-client" }
 gw-ckb-hardfork = { path = "../ckb-hardfork" }
-gw-runtime = { path = "../runtime" }
 anyhow = "1.0"
 blake2b-rs = "0.2"
 ckb-vm = { version = "=0.20.0-rc5", features = ["detect-asm"] }
