@@ -6,7 +6,7 @@ use gw_config::WalletConfig;
 use gw_types::{
     bytes::Bytes,
     core::ScriptHashType,
-    packed::{Script, Transaction},
+    packed::{Script, Transaction, WitnessArgs},
     prelude::{Builder, Entity, Pack, Unpack},
 };
 use sha3::{Digest, Keccak256};
@@ -94,6 +94,13 @@ impl Wallet {
                 .get(entry.indexes[0])
                 .expect("get first witness")
                 .unpack();
+            let first_witness = WitnessArgs::from_slice(&first_witness).expect("witness args");
+            let sig_bytes = first_witness.lock().to_opt().expect("signature bytes");
+            let first_witness = first_witness
+                .as_builder()
+                .lock(Some(Bytes::from(vec![0; sig_bytes.len()])).pack())
+                .build()
+                .as_bytes();
             hasher.update(&(first_witness.len() as u64).to_le_bytes());
             hasher.update(&first_witness);
             // hash the other witnesses in the group
@@ -112,7 +119,7 @@ impl Wallet {
             hasher.finalize(&mut message);
             // sign tx
             let signature = Signature::new(entry.kind, self.sign_message(message)?);
-            signatures.push(signature.as_bytes());
+            signatures.push(signature);
         }
         // seal
         let sealed_tx = tx_skeleton.seal(&signature_entries, signatures)?;

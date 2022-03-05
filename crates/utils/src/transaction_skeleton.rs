@@ -27,31 +27,29 @@ pub struct SignatureEntry {
 
 #[derive(Debug)]
 pub enum Signature {
-    OmniLockSecp256k1([u8; 65]),
+    OmniLockSecp256k1(OmniLockWitnessLock),
     GenesisSecp256k1([u8; 65]),
 }
 
 impl Signature {
     pub fn new(kind: SignatureKind, sig: [u8; 65]) -> Self {
         match kind {
-            SignatureKind::OmniLockSecp256k1 => Signature::OmniLockSecp256k1(sig),
+            SignatureKind::OmniLockSecp256k1 => Signature::OmniLockSecp256k1(
+                OmniLockWitnessLock::new_builder()
+                    .signature(Some(Bytes::from(sig.to_vec())).pack())
+                    .build(),
+            ),
             SignatureKind::GenesisSecp256k1 => Signature::GenesisSecp256k1(sig),
         }
     }
 
-    pub fn zero_bytes_from_entry(entry: &SignatureEntry) -> Bytes {
-        let len = Self::new(entry.kind, [0u8; 65]).as_bytes().len();
-        let mut buf = Vec::new();
-        buf.resize(len, 0);
-        Bytes::from(buf)
+    pub fn zero_bytes_from_entry(entry: &SignatureEntry) -> Self {
+        Self::new(entry.kind, [0u8; 65])
     }
 
     pub fn as_bytes(&self) -> Bytes {
         match self {
-            Signature::OmniLockSecp256k1(sig) => OmniLockWitnessLock::new_builder()
-                .signature(Some(Bytes::from(sig.to_vec())).pack())
-                .build()
-                .as_bytes(),
+            Signature::OmniLockSecp256k1(sig) => sig.as_bytes(),
             Signature::GenesisSecp256k1(sig) => Bytes::from(sig.to_vec()),
         }
     }
@@ -172,7 +170,7 @@ impl TransactionSkeleton {
     pub fn seal(
         &self,
         entries: &[SignatureEntry],
-        signatures: Vec<Bytes>,
+        signatures: Vec<Signature>,
     ) -> Result<SealedTransaction> {
         assert_eq!(entries.len(), signatures.len());
         // build raw tx
@@ -218,7 +216,7 @@ impl TransactionSkeleton {
             *witness_args = witness_args
                 .to_owned()
                 .as_builder()
-                .lock(Some(signature).pack())
+                .lock(Some(signature.as_bytes()).pack())
                 .build();
         }
 
