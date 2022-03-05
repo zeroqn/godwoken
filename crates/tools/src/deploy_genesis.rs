@@ -433,7 +433,8 @@ pub fn deploy_rollup_cell(args: DeployRollupCellArgs) -> Result<RollupDeployment
                     .args()
                     .unpack(),
             };
-            println!("pubkey_h160 {:?}", pubkey_h160);
+            println!("pubkey_h160 {:?}", pubkey_h160.to_vec());
+            println!("pubkey_h160 {:?}", pubkey_h160.to_vec().len());
             let args = {
                 let mut buf = BytesMut::new();
                 buf.put_u8(OMNI_LOCK_IDENTITY_FLAGS_PUBKEY_HASH);
