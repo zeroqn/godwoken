@@ -43,8 +43,8 @@ impl Signature {
         }
     }
 
-    pub fn zero_bytes_from_entry(entry: &SignatureEntry) -> Self {
-        Self::new(entry.kind, [0u8; 65])
+    pub fn zero_bytes_from_entry(entry: &SignatureEntry) -> Bytes {
+        Self::new(entry.kind, [0u8; 65]).as_bytes()
     }
 
     pub fn as_bytes(&self) -> Bytes {
@@ -170,7 +170,7 @@ impl TransactionSkeleton {
     pub fn seal(
         &self,
         entries: &[SignatureEntry],
-        signatures: Vec<Signature>,
+        signatures: Vec<Bytes>,
     ) -> Result<SealedTransaction> {
         assert_eq!(entries.len(), signatures.len());
         // build raw tx
@@ -216,7 +216,7 @@ impl TransactionSkeleton {
             *witness_args = witness_args
                 .to_owned()
                 .as_builder()
-                .lock(Some(signature.as_bytes()).pack())
+                .lock(Some(signature).pack())
                 .build();
         }
 
