@@ -44,7 +44,10 @@ impl Signature {
     }
 
     pub fn zero_bytes_from_entry(entry: &SignatureEntry) -> Bytes {
-        Self::new(entry.kind, [0u8; 65]).as_bytes()
+        let len = Self::new(entry.kind, [0u8; 65]).as_bytes().len();
+        let mut buf = Vec::new();
+        buf.resize(len, 0);
+        Bytes::from(buf)
     }
 
     pub fn as_bytes(&self) -> Bytes {
