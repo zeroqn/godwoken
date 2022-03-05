@@ -6,7 +6,7 @@ use gw_config::WalletConfig;
 use gw_types::{
     bytes::Bytes,
     core::ScriptHashType,
-    packed::{Script, Transaction, WitnessArgs},
+    packed::{Script, Transaction},
     prelude::{Builder, Entity, Pack, Unpack},
 };
 use sha3::{Digest, Keccak256};
