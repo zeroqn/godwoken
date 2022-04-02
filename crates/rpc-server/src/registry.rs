@@ -185,7 +185,7 @@ impl Registry {
             }
             None => Arc::new(MemPoolState::new(
                 Arc::new(MemStore::new(store.get_snapshot())),
-                true,
+                false,
             )),
         };
         let (submit_tx, submit_rx) = async_channel::bounded(RequestSubmitter::MAX_CHANNEL_SIZE);
