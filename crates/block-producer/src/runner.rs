@@ -910,7 +910,7 @@ pub async fn run(config: Config, skip_config_check: bool) -> Result<()> {
                                 backoff.reset();
 
                                 let sleep_span =
-                                    info_span!(parent: run_span, "chain_task interval sleep");
+                                    info_span!(parent: &run_span, "chain_task interval sleep");
                                 tokio::time::sleep(chain_task.poll_interval)
                                     .instrument(sleep_span)
                                     .await;
@@ -926,7 +926,7 @@ pub async fn run(config: Config, skip_config_check: bool) -> Result<()> {
                                 );
 
                                 let sleep_span =
-                                    info_span!(parent: run_span, "chain_task backoff sleep");
+                                    info_span!(parent: &run_span, "chain_task backoff sleep");
                                 tokio::time::sleep(backoff_sleep)
                                     .instrument(sleep_span)
                                     .await;
