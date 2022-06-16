@@ -900,13 +900,19 @@ pub async fn run(config: Config, skip_config_check: bool) -> Result<()> {
                         }
 
                         let run_span = info_span!("chain_task_run");
-                        match chain_task.run(&run_status).instrument(run_span).await {
+                        match chain_task
+                            .run(&run_status)
+                            .instrument(run_span.clone())
+                            .await
+                        {
                             Ok(updated_status) => {
                                 run_status = updated_status;
                                 backoff.reset();
 
+                                let sleep_span =
+                                    info_span!(parent: run_span, "chain_task interval sleep");
                                 tokio::time::sleep(chain_task.poll_interval)
-                                    .instrument(info_span!("chain_task interval sleep"))
+                                    .instrument(sleep_span)
                                     .await;
                             }
                             Err(err) if err.is::<RPCRequestError>() => {
@@ -919,8 +925,10 @@ pub async fn run(config: Config, skip_config_check: bool) -> Result<()> {
                                     err
                                 );
 
+                                let sleep_span =
+                                    info_span!(parent: run_span, "chain_task backoff sleep");
                                 tokio::time::sleep(backoff_sleep)
-                                    .instrument(info_span!("chain_task backoff sleep"))
+                                    .instrument(sleep_span)
                                     .await;
                             }
                             Err(err) => {
