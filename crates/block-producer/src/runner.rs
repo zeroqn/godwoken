@@ -64,7 +64,7 @@ use tokio::{
     spawn,
     sync::{broadcast, mpsc, Mutex},
 };
-use tracing::{info_span, instrument};
+use tracing::{info_span, instrument, Instrument};
 
 const MIN_CKB_VERSION: &str = "0.40.0";
 const EVENT_TIMEOUT_SECONDS: u64 = 30;
@@ -897,17 +897,15 @@ pub async fn run(config: Config, skip_config_check: bool) -> Result<()> {
                             return;
                         }
 
-                        let chain_task_run_span = info_span!("chain_task_run");
-                        let _run_guard = chain_task_run_span.enter();
-
-                        match chain_task.run(&run_status).await {
+                        let run_span = info_span!("chain_task_run");
+                        match chain_task.run(&run_status).instrument(run_span).await {
                             Ok(updated_status) => {
                                 run_status = updated_status;
                                 backoff.reset();
 
-                                let interval_sleep_span = info_span!("chain_task interval sleep");
-                                let _guard = interval_sleep_span.enter();
-                                tokio::time::sleep(chain_task.poll_interval).await;
+                                tokio::time::sleep(chain_task.poll_interval)
+                                    .instrument(info_span!("chain_task interval sleep"))
+                                    .await;
                             }
                             Err(err) if err.is::<RPCRequestError>() => {
                                 // Reset status and refresh tip number hash
@@ -919,9 +917,9 @@ pub async fn run(config: Config, skip_config_check: bool) -> Result<()> {
                                     err
                                 );
 
-                                let backoff_sleep_span = info_span!("chain_task backoff sleep");
-                                let _guard = backoff_sleep_span.enter();
-                                tokio::time::sleep(backoff_sleep).await;
+                                tokio::time::sleep(backoff_sleep)
+                                    .instrument(info_span!("chain_task backoff sleep"))
+                                    .await;
                             }
                             Err(err) => {
                                 log::error!("chain polling loop exit unexpected, error: {}", err);
