@@ -64,7 +64,7 @@ use tokio::{
     spawn,
     sync::{broadcast, mpsc, Mutex},
 };
-use tracing::{info_span, instrument, Instrument};
+use tracing::{info_span, instrument};
 
 const MIN_CKB_VERSION: &str = "0.40.0";
 const EVENT_TIMEOUT_SECONDS: u64 = 30;
@@ -872,6 +872,8 @@ pub async fn run(config: Config, skip_config_check: bool) -> Result<()> {
             let shutdown_send = shutdown_send.clone();
             move || {
                 rt_handle.block_on(async move {
+                    use tracing::Instrument;
+
                     let _tx = chain_task_ended_tx;
                     let ctx = ChainTaskContext {
                         chain_updater,
