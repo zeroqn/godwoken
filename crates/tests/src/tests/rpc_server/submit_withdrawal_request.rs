@@ -77,16 +77,20 @@ async fn test_submit_withdrawal_request() {
             .build()
     };
 
-    // Expect `gw_submit_withdrawal_request` call finalized custodian check logic code
+    // Call `gw_submit_withdrawal_request`, and want to check `gw_submit_withdrawal_request`
+    // indeed enter finalized custodian logic code block in `inner_submit_withdrawal_request` fn.
     let err = rpc_server
         .submit_withdrawal_request(&withdrawal)
         .await
         .unwrap_err();
     eprintln!("submit withdrawal request {}", err);
 
-    // Expect rpc error since we don't configure valid rpc url
+    // Expect rpc error since we don't have ckb indexer running for this test, and we don't
+    // have mock for finalized custodian check.
     assert!(err.to_string().contains("get_cells error"));
 
+    // Now check reset of withdrawal logic code using `gw_submit_withdrawal_request_finalized_custodian_unchecked`.
+    // They use same `inner_submit_withdrawal_request` fn, and the only different is skip finalized custodian check.
     let withdrawal_hash = rpc_server
         .submit_withdrawal_request_finalized_custodian_unchecked(&withdrawal)
         .await
