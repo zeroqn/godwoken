@@ -3,13 +3,15 @@ use async_trait::async_trait;
 use ckb_types::prelude::{Builder, Entity};
 use gw_common::blake2b::new_blake2b;
 use gw_common::builtins::{CKB_SUDT_ACCOUNT_ID, ETH_REGISTRY_ACCOUNT_ID};
-use gw_common::{state::State, H256};
+use gw_common::state::State;
+use gw_common::H256;
 use gw_config::{
     ChainConfig, ConsensusConfig, FeeConfig, MemPoolConfig, NodeMode, RPCMethods, RPCRateLimit,
     RPCServerConfig, SyscallCyclesConfig,
 };
 use gw_dynamic_config::manager::{DynamicConfigManager, DynamicConfigReloadResponse};
 use gw_generator::generator::CyclesPool;
+use gw_generator::traits::StateExt;
 use gw_generator::utils::get_tx_type;
 use gw_generator::{
     error::TransactionError, sudt::build_l2_sudt_script,
@@ -385,7 +387,8 @@ impl Registry {
                 RPCMethods::PProf => {
                     server = server
                         .with_method("gw_start_profiler", start_profiler)
-                        .with_method("gw_report_pprof", report_pprof);
+                        .with_method("gw_report_pprof", report_pprof)
+                        .with_method("gw_get_block_cycles_journal", get_block_cycles_journal);
                 }
                 RPCMethods::Test => {
                     server = server
@@ -2136,6 +2139,154 @@ async fn dump_jemalloc_profiling() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Default, Debug, serde::Serialize)]
+struct SyscallCycles {
+    count: u64,
+    total: u64,
+}
+
+impl From<gw_types::offchain::SyscallCycles> for SyscallCycles {
+    fn from(cycles: gw_types::offchain::SyscallCycles) -> Self {
+        SyscallCycles {
+            count: cycles.count,
+            total: cycles.total,
+        }
+    }
+}
+
+#[derive(Default, Debug, serde::Serialize)]
+struct VirtualCyclesJournal {
+    sys_store_cycles: SyscallCycles,
+    sys_load_cycles: SyscallCycles,
+    sys_create_cycles: SyscallCycles,
+    sys_load_account_script_cycles: SyscallCycles,
+    sys_store_data_cycles: SyscallCycles,
+    sys_load_data_cycles: SyscallCycles,
+    sys_get_block_hash_cycles: SyscallCycles,
+    sys_recover_account_cycles: SyscallCycles,
+    sys_log_cycles: SyscallCycles,
+}
+
+#[derive(Default, Debug, serde::Serialize)]
+struct TransactionCyclesJournal {
+    hash: JsonH256,
+    execution: u64,
+    r#virtual: u64,
+    virtual_journal: VirtualCyclesJournal,
+}
+
+impl From<gw_types::offchain::VirtualCyclesJournal> for VirtualCyclesJournal {
+    fn from(journal: gw_types::offchain::VirtualCyclesJournal) -> Self {
+        VirtualCyclesJournal {
+            sys_store_cycles: journal.sys_store_cycles.into(),
+            sys_load_cycles: journal.sys_load_cycles.into(),
+            sys_create_cycles: journal.sys_create_cycles.into(),
+            sys_load_account_script_cycles: journal.sys_load_account_script_cycles.into(),
+            sys_store_data_cycles: journal.sys_store_data_cycles.into(),
+            sys_load_data_cycles: journal.sys_load_data_cycles.into(),
+            sys_get_block_hash_cycles: journal.sys_get_block_hash_cycles.into(),
+            sys_recover_account_cycles: journal.sys_recover_account_cycles.into(),
+            sys_log_cycles: journal.sys_log_cycles.into(),
+        }
+    }
+}
+
+#[derive(Default, Debug, serde::Serialize)]
+struct BlockCyclesJournal {
+    tx_cycles: Vec<TransactionCyclesJournal>,
+}
+
+async fn get_block_cycles_journal(
+    Params((block_number,)): Params<(GwUint64,)>,
+    store: Data<Store>,
+    generator: Data<Generator>,
+) -> Result<BlockCyclesJournal> {
+    use gw_generator::constants::L2TX_MAX_CYCLES;
+
+    let block_number = block_number.value();
+
+    let block_hash = store
+        .get_block_hash_by_number(block_number)?
+        .context("block not found")?;
+
+    let block = store.get_block(&block_hash)?.context("block not found")?;
+
+    let deposits = store
+        .get_block_deposit_info_vec(block_number)
+        .context("block deposit not found")?;
+
+    let withdrawals = {
+        let reqs = block.as_reader().withdrawals();
+        let extra_reqs = reqs.iter().map(|w| {
+            let h = w.hash().into();
+            store
+                .get_withdrawal(&h)?
+                .context("block withdrawal not found")
+        });
+        extra_reqs.collect::<Result<Vec<_>>>()?
+    };
+
+    let raw_block = block.raw();
+    let block_info = BlockInfo::new_builder()
+        .block_producer(raw_block.block_producer())
+        .number(raw_block.number())
+        .timestamp(raw_block.timestamp())
+        .build();
+
+    let snap = store.get_snapshot();
+    let mem_store = MemStore::new(snap);
+    let mut state = mem_store.state()?;
+
+    let block_producer = {
+        let block_producer: Bytes = block_info.block_producer().unpack();
+        gw_common::registry_address::RegistryAddress::from_slice(&block_producer)
+            .ok_or_else(|| anyhow!("Invalid block producer address"))?
+    };
+
+    for withdrawal in withdrawals.iter() {
+        generator.check_withdrawal_signature(&state, withdrawal)?;
+
+        state.apply_withdrawal_request(
+            generator.rollup_context(),
+            &block_producer,
+            &withdrawal.request(),
+        )?;
+    }
+
+    for req in deposits.into_iter().map(|info| info.request()) {
+        state.apply_deposit_request(generator.rollup_context(), &req)?;
+    }
+
+    let mut block_cycles_journal = BlockCyclesJournal::default();
+
+    // handle transactions
+    let db = store.begin_transaction();
+    let parent_block_hash: H256 = raw_block.parent_block_hash().unpack();
+    let chain_view = ChainView::new(&db, parent_block_hash);
+    for tx in block.transactions().into_iter() {
+        let run_result = generator.execute_transaction(
+            &chain_view,
+            &state,
+            &block_info,
+            &tx.raw(),
+            L2TX_MAX_CYCLES,
+            None,
+        )?;
+
+        state.apply_run_result(&run_result.write)?;
+
+        let cycles_journal = TransactionCyclesJournal {
+            hash: to_jsonh256(tx.hash().into()),
+            execution: run_result.cycles.execution,
+            r#virtual: run_result.cycles.r#virtual,
+            virtual_journal: run_result.cycles.virtual_journal.into(),
+        };
+        block_cycles_journal.tx_cycles.push(cycles_journal);
+    }
+
+    Ok(block_cycles_journal)
 }
 
 // Reload config dynamically and return the difference between two configs.
