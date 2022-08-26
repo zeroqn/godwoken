@@ -244,6 +244,7 @@ impl Generator {
                     let cycles = RunResultCycles {
                         execution: execution_cycles,
                         r#virtual: run_result.cycles.r#virtual,
+                        virtual_journal: run_result.cycles.virtual_journal,
                     };
                     let limit = cycles_pool.limit;
 

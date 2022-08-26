@@ -20,10 +20,37 @@ pub struct RunResultWriteState {
     pub logs: Vec<LogItem>,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SyscallCycles {
+    pub count: u64,
+    pub total: u64,
+}
+
+impl SyscallCycles {
+    pub fn increase(&mut self, cycles: u64) {
+        self.count = self.count.saturating_add(1);
+        self.total = self.total.saturating_add(cycles);
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct VirtualCyclesJournal {
+    pub sys_store_cycles: SyscallCycles,
+    pub sys_load_cycles: SyscallCycles,
+    pub sys_create_cycles: SyscallCycles,
+    pub sys_load_account_script_cycles: SyscallCycles,
+    pub sys_store_data_cycles: SyscallCycles,
+    pub sys_load_data_cycles: SyscallCycles,
+    pub sys_get_block_hash_cycles: SyscallCycles,
+    pub sys_recover_account_cycles: SyscallCycles,
+    pub sys_log_cycles: SyscallCycles,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunResultCycles {
     pub execution: u64,
     pub r#virtual: u64,
+    pub virtual_journal: VirtualCyclesJournal,
 }
 
 impl RunResultCycles {

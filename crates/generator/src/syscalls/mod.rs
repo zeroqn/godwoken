@@ -147,6 +147,20 @@ impl<'a, 'b, S: State, C: ChainView, Mac: SupportMachine> Syscalls<Mac>
                 self.result.cycles.r#virtual =
                     self.result.cycles.r#virtual.saturating_add(syscall_cycles);
 
+                let virtual_journal = &mut self.result.cycles.virtual_journal;
+                match code {
+                    SYS_STORE => virtual_journal.sys_store_cycles.increase(syscall_cycles),
+                    SYS_LOAD => virtual_journal.sys_load_cycles.increase(syscall_cycles),
+                    SYS_CREATE => virtual_journal.sys_create_cycles.increase(syscall_cycles),
+                    SYS_LOAD_ACCOUNT_SCRIPT => virtual_journal.sys_load_account_script_cycles.increase(syscall_cycles),
+                    SYS_STORE_DATA => virtual_journal.sys_store_data_cycles.increase(syscall_cycles),
+                    SYS_LOAD_DATA => virtual_journal.sys_load_data_cycles.increase(syscall_cycles),
+                    SYS_GET_BLOCK_HASH => virtual_journal.sys_get_block_hash_cycles.increase(syscall_cycles),
+                    SYS_RECOVER_ACCOUNT => virtual_journal.sys_recover_account_cycles.increase(syscall_cycles),
+                    SYS_LOG => virtual_journal.sys_log_cycles.increase(syscall_cycles),
+                    _ => (),
+                }
+
                 // Subtract cycles to interrupt execution eariler
                 let execution_and_virtual = machine
                     .cycles()
