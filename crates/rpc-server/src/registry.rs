@@ -352,7 +352,8 @@ impl Registry {
             .with_method("gw_get_mem_pool_state_ready", get_mem_pool_state_ready)
             .with_method("gw_get_node_info", get_node_info)
             .with_method("gw_reload_config", reload_config)
-            .with_method("gw_get_last_submitted_info", get_last_submitted_info);
+            .with_method("gw_get_last_submitted_info", get_last_submitted_info)
+            .with_method("gw_get_block_cycles_journal", get_block_cycles_journal);
 
         if self.node_mode != NodeMode::ReadOnly {
             server = server
@@ -374,8 +375,7 @@ impl Registry {
                 RPCMethods::PProf => {
                     server = server
                         .with_method("gw_start_profiler", start_profiler)
-                        .with_method("gw_report_pprof", report_pprof)
-                        .with_method("gw_get_block_cycles_journal", get_block_cycles_journal);
+                        .with_method("gw_report_pprof", report_pprof);
                 }
                 RPCMethods::Test => {
                     server = server
