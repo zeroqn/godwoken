@@ -2172,6 +2172,7 @@ struct VirtualCyclesJournal {
 #[derive(Default, Debug, serde::Serialize)]
 struct TransactionCyclesJournal {
     hash: JsonH256,
+    total: u64,
     execution: u64,
     r#virtual: u64,
     virtual_journal: VirtualCyclesJournal,
@@ -2195,11 +2196,15 @@ impl From<gw_types::offchain::VirtualCyclesJournal> for VirtualCyclesJournal {
 
 #[derive(Default, Debug, serde::Serialize)]
 struct BlockCyclesJournal {
+    tx_count: u32,
     tx_cycles: Vec<TransactionCyclesJournal>,
+    err_tx: Option<(u32, JsonH256)>,
+    err_msg: String,
+    mem_block_config: gw_config::MemBlockConfig,
 }
 
 async fn get_block_cycles_journal(
-    Params((block_number,)): Params<(GwUint64,)>,
+    Params((block_number, unlimit_max_cycles)): Params<(GwUint64, u8)>,
     store: Data<Store>,
     generator: Data<Generator>,
     mem_pool_config: Data<MemPoolConfig>,
@@ -2208,6 +2213,7 @@ async fn get_block_cycles_journal(
     use anyhow::Context;
 
     let block_number = block_number.value();
+    let unlimit_max_cycles = 1 == unlimit_max_cycles;
 
     let block_hash = store
         .get_block_hash_by_number(block_number)?
@@ -2240,10 +2246,6 @@ async fn get_block_cycles_journal(
     let snap = store.get_snapshot();
     let mem_store = MemStore::new(snap);
     let mut state = mem_store.state()?;
-    let mut cycles_pool = CyclesPool::new(
-        mem_pool_config.mem_block.max_cycles_limit,
-        mem_pool_config.mem_block.syscall_cycles.clone(),
-    );
 
     let block_producer = {
         let block_producer: Bytes = block_info.block_producer().unpack();
@@ -2265,31 +2267,74 @@ async fn get_block_cycles_journal(
         state.apply_deposit_request(generator.rollup_context(), &req)?;
     }
 
-    let mut block_cycles_journal = BlockCyclesJournal::default();
+    let max_cycles_limit = if unlimit_max_cycles {
+        u64::MAX
+    } else {
+        mem_pool_config.mem_block.max_cycles_limit
+    };
+    let mut cycles_pool = CyclesPool::new(
+        max_cycles_limit,
+        mem_pool_config.mem_block.syscall_cycles.clone(),
+    );
+    let mut block_cycles_journal = BlockCyclesJournal {
+        tx_count: block.raw().submit_transactions().tx_count().unpack(),
+        mem_block_config: mem_pool_config.mem_block.clone(),
+        ..Default::default()
+    };
 
     // handle transactions
     let db = store.begin_transaction();
     let parent_block_hash: H256 = raw_block.parent_block_hash().unpack();
     let chain_view = ChainView::new(&db, parent_block_hash);
-    for tx in block.transactions().into_iter() {
-        let run_result = generator.execute_transaction(
+    for (tx_idx, tx) in block.transactions().into_iter().enumerate() {
+        let maybe_run_result = generator.execute_transaction(
             &chain_view,
             &state,
             &block_info,
             &tx.raw(),
             L2TX_MAX_CYCLES,
             Some(&mut cycles_pool),
-        )?;
+        );
 
-        state.apply_run_result(&run_result.write)?;
+        match maybe_run_result {
+            Ok(run_result) => {
+                let cycles = &run_result.cycles;
+                let cycles_journal = TransactionCyclesJournal {
+                    hash: to_jsonh256(tx.hash().into()),
+                    total: cycles.execution.saturating_add(cycles.r#virtual),
+                    execution: cycles.execution,
+                    r#virtual: cycles.r#virtual,
+                    virtual_journal: run_result.cycles.virtual_journal.into(),
+                };
+                block_cycles_journal.tx_cycles.push(cycles_journal);
 
-        let cycles_journal = TransactionCyclesJournal {
-            hash: to_jsonh256(tx.hash().into()),
-            execution: run_result.cycles.execution,
-            r#virtual: run_result.cycles.r#virtual,
-            virtual_journal: run_result.cycles.virtual_journal.into(),
-        };
-        block_cycles_journal.tx_cycles.push(cycles_journal);
+                state.apply_run_result(&run_result.write)?;
+            }
+            Err(TransactionError::InsufficientPoolCycles { cycles, .. })
+            | Err(TransactionError::ExceededMaxBlockCycles { cycles, .. }) => {
+                let cycles_journal = TransactionCyclesJournal {
+                    hash: to_jsonh256(tx.hash().into()),
+                    total: cycles.execution.saturating_add(cycles.r#virtual),
+                    execution: cycles.execution,
+                    r#virtual: cycles.r#virtual,
+                    virtual_journal: cycles.virtual_journal.into(),
+                };
+                block_cycles_journal.err_tx = Some((tx_idx as u32, cycles_journal.hash.clone()));
+                block_cycles_journal.err_msg = "cycles".to_string();
+                block_cycles_journal.tx_cycles.push(cycles_journal);
+                return Ok(block_cycles_journal);
+            }
+            Err(err) => {
+                let cycles_journal = TransactionCyclesJournal {
+                    hash: to_jsonh256(tx.hash().into()),
+                    ..Default::default()
+                };
+                block_cycles_journal.err_tx = Some((tx_idx as u32, cycles_journal.hash.clone()));
+                block_cycles_journal.err_msg = err.to_string();
+                block_cycles_journal.tx_cycles.push(cycles_journal);
+                return Ok(block_cycles_journal);
+            }
+        }
     }
 
     Ok(block_cycles_journal)
