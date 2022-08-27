@@ -2202,6 +2202,7 @@ async fn get_block_cycles_journal(
     Params((block_number,)): Params<(GwUint64,)>,
     store: Data<Store>,
     generator: Data<Generator>,
+    mem_pool_config: Data<MemPoolConfig>,
 ) -> Result<BlockCyclesJournal> {
     use gw_generator::constants::L2TX_MAX_CYCLES;
     use anyhow::Context;
@@ -2239,6 +2240,10 @@ async fn get_block_cycles_journal(
     let snap = store.get_snapshot();
     let mem_store = MemStore::new(snap);
     let mut state = mem_store.state()?;
+    let mut cycles_pool = CyclesPool::new(
+        mem_pool_config.mem_block.max_cycles_limit,
+        mem_pool_config.mem_block.syscall_cycles.clone(),
+    );
 
     let block_producer = {
         let block_producer: Bytes = block_info.block_producer().unpack();
@@ -2273,7 +2278,7 @@ async fn get_block_cycles_journal(
             &block_info,
             &tx.raw(),
             L2TX_MAX_CYCLES,
-            None,
+            Some(&mut cycles_pool),
         )?;
 
         state.apply_run_result(&run_result.write)?;
