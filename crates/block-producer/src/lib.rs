@@ -15,3 +15,4 @@ pub mod types;
 pub mod utils;
 pub mod withdrawal;
 pub mod withdrawal_unlocker;
+pub mod withdrawal_finalizer;
