@@ -2243,8 +2243,8 @@ async fn get_block_cycles_journal(
     generator: Data<Generator>,
     mem_pool_config: Data<MemPoolConfig>,
 ) -> Result<BlockCyclesJournal> {
-    use gw_generator::constants::L2TX_MAX_CYCLES;
     use anyhow::Context;
+    use gw_generator::constants::L2TX_MAX_CYCLES;
 
     let block_number = block_number.value();
     let unlimit_max_cycles = 1 == unlimit_max_cycles;
@@ -2257,7 +2257,7 @@ async fn get_block_cycles_journal(
     let block = store.get_block(&block_hash)?.context("block not found")?;
 
     let deposits = store
-        .get_block_deposit_info_vec(block_number)
+        .get_block_deposit_requests(&block_hash)?
         .context("block deposit not found")?;
 
     let withdrawals = {
@@ -2298,7 +2298,7 @@ async fn get_block_cycles_journal(
         )?;
     }
 
-    for req in deposits.into_iter().map(|info| info.request()) {
+    for req in deposits {
         state.apply_deposit_request(generator.rollup_context(), &req)?;
     }
 
