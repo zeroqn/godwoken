@@ -22,7 +22,7 @@ use gw_types::{
     core::{AllowedContractType, AllowedEoaType, ScriptHashType},
     offchain::{CellInfo, CollectedCustodianCells, DepositInfo, RollupContext},
     packed::{
-        AllowedTypeHash, CellOutput, DepositLockArgs, DepositRequest, L2Block,
+        AllowedTypeHash, CellOutput, DepositLockArgs, DepositRequest, GlobalState, L2Block,
         L2BlockCommittedInfo, RawTransaction, RollupAction, RollupActionUnion, RollupConfig,
         RollupSubmitBlock, Script, Transaction, WithdrawalRequestExtra, WitnessArgs,
     },
@@ -204,6 +204,16 @@ impl TestChain {
         }
     }
 
+    pub async fn setup_with_config(rollup_type_script: Script, config: RollupConfig) -> Self {
+        let inner = setup_chain_with_config(rollup_type_script.clone(), config).await;
+
+        Self {
+            l1_committed_block_number: 1,
+            rollup_type_script,
+            inner,
+        }
+    }
+
     pub async fn update_mem_pool_config(self, mut mem_pool_config: MemPoolConfig) -> Self {
         let Self {
             l1_committed_block_number,
@@ -275,19 +285,33 @@ impl TestChain {
             .unwrap()
     }
 
+    pub fn last_global_state(&self) -> &GlobalState {
+        self.inner.local_state().last_global_state()
+    }
+
     pub async fn produce_block(
         &mut self,
         deposit_requests: Vec<DepositRequest>,
         withdrawals: Vec<WithdrawalRequestExtra>,
     ) -> anyhow::Result<()> {
-        let rollup_cell = CellOutput::new_builder()
-            .type_(Some(self.rollup_type_script.clone()).pack())
-            .build();
-
         let block_result = {
             let mut mem_pool = self.mem_pool().await;
             construct_block(&self.inner, &mut mem_pool, deposit_requests.clone()).await?
         };
+
+        self.apply_block_result(deposit_requests, withdrawals, block_result)
+            .await
+    }
+
+    pub async fn apply_block_result(
+        &mut self,
+        deposit_requests: Vec<DepositRequest>,
+        withdrawals: Vec<WithdrawalRequestExtra>,
+        block_result: ProduceBlockResult,
+    ) -> anyhow::Result<()> {
+        let rollup_cell = CellOutput::new_builder()
+            .type_(Some(self.rollup_type_script.clone()).pack())
+            .build();
 
         self.l1_committed_block_number += 1;
         let update_action = L1Action {
