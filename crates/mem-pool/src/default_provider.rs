@@ -6,15 +6,14 @@ use gw_config::MemBlockConfig;
 use gw_rpc_client::rpc_client::RPCClient;
 use gw_store::{traits::chain_store::ChainStore, Store};
 use gw_types::{
-    offchain::{CellWithStatus, CollectedCustodianCells, DepositInfo, RollupContext},
-    packed::{OutPoint, WithdrawalRequest},
+    offchain::{CellWithStatus, DepositInfo},
+    packed::OutPoint,
     prelude::*,
 };
 use tracing::instrument;
 
 use crate::{
     constants::{MIN_CKB_DEPOSIT_CAPACITY, MIN_SUDT_DEPOSIT_CAPACITY},
-    custodian::query_finalized_custodians,
     traits::MemPoolProvider,
 };
 
@@ -91,24 +90,5 @@ impl MemPoolProvider for DefaultMemPoolProvider {
     #[instrument(skip_all)]
     async fn get_cell(&self, out_point: OutPoint) -> Result<Option<CellWithStatus>> {
         self.rpc_client.get_cell(out_point).await
-    }
-
-    #[instrument(skip_all)]
-    async fn query_available_custodians(
-        &self,
-        withdrawals: Vec<WithdrawalRequest>,
-        last_finalized_block_number: u64,
-        rollup_context: RollupContext,
-    ) -> Result<CollectedCustodianCells> {
-        let db = self.store.begin_transaction();
-        let r = query_finalized_custodians(
-            &self.rpc_client,
-            &db,
-            withdrawals.clone().into_iter(),
-            &rollup_context,
-            last_finalized_block_number,
-        )
-        .await?;
-        Ok(r.expect_any())
     }
 }

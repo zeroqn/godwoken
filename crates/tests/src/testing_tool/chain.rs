@@ -20,7 +20,7 @@ use gw_store::{mem_pool_state::MemPoolState, traits::chain_store::ChainStore, St
 use gw_types::{
     bytes::Bytes,
     core::{AllowedContractType, AllowedEoaType, ScriptHashType},
-    offchain::{CellInfo, CollectedCustodianCells, DepositInfo, RollupContext},
+    offchain::{CellInfo, DepositInfo, RollupContext},
     packed::{
         AllowedTypeHash, CellOutput, DepositLockArgs, DepositRequest, GlobalState, L2Block,
         L2BlockCommittedInfo, RawTransaction, RollupAction, RollupActionUnion, RollupConfig,
@@ -652,22 +652,6 @@ pub async fn construct_block_with_timestamp(
     let generator = chain.generator();
     let rollup_config_hash = (*chain.rollup_config_hash()).into();
 
-    let mut collected_custodians = CollectedCustodianCells {
-        capacity: u128::MAX,
-        ..Default::default()
-    };
-    for withdrawal_hash in mem_pool.mem_block().withdrawals().iter() {
-        let req = db.get_mem_pool_withdrawal(withdrawal_hash)?.unwrap();
-        if 0 == req.raw().amount().unpack() {
-            continue;
-        }
-
-        let sudt_script_hash: [u8; 32] = req.raw().sudt_script_hash().unpack();
-        collected_custodians
-            .sudt
-            .insert(sudt_script_hash, (std::u128::MAX, Script::default()));
-    }
-
     let deposit_lock_type_hash = generator
         .rollup_context()
         .rollup_config
@@ -708,7 +692,6 @@ pub async fn construct_block_with_timestamp(
     let provider = DummyMemPoolProvider {
         deposit_cells,
         fake_blocktime: Duration::from_millis(timestamp),
-        collected_custodians: collected_custodians.clone(),
     };
     mem_pool.set_provider(Box::new(provider));
     // refresh mem block
@@ -718,13 +701,11 @@ pub async fn construct_block_with_timestamp(
     let provider = DummyMemPoolProvider {
         deposit_cells: Vec::default(),
         fake_blocktime: Duration::from_millis(0),
-        collected_custodians,
     };
     mem_pool.set_provider(Box::new(provider));
 
     let (mem_block, post_merkle_state) = mem_pool.output_mem_block(&OutputParam::default());
-    let (_custodians, block_param) =
-        generate_produce_block_param(chain.store(), mem_block, post_merkle_state)?;
+    let block_param = generate_produce_block_param(chain.store(), mem_block, post_merkle_state)?;
     let reverted_block_root = chain.store().get_reverted_block_smt_root().unwrap();
     let param = ProduceBlockParam {
         stake_cell_owner_lock_hash,

@@ -363,7 +363,7 @@ impl BlockProducer {
 
             let t = Instant::now();
             let tip_block_number = mem_block.block_info().number().unpack().saturating_sub(1);
-            let (finalized_custodians, produce_block_param) =
+            let produce_block_param =
                 generate_produce_block_param(&self.store, mem_block, post_block_state)?;
             rollup_input_since.verify_block_timestamp(produce_block_param.timestamp)?;
 
@@ -374,7 +374,7 @@ impl BlockProducer {
                 };
                 let query = query_mergeable_custodians(
                     &self.rpc_client,
-                    finalized_custodians.unwrap_or_default(),
+                    CollectedCustodianCells::default(),
                     last_finalized_block_number,
                 );
                 query.await?.expect_any()

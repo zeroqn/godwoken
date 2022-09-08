@@ -15,7 +15,7 @@ use gw_mem_pool::pool::OutputParam;
 use gw_store::{mem_pool_state::MemStore, traits::chain_store::ChainStore};
 use gw_types::{
     core::ScriptHashType,
-    offchain::{CellInfo, CollectedCustodianCells, DepositInfo, RollupContext},
+    offchain::{CellInfo, DepositInfo, RollupContext},
     packed::{CellOutput, DepositLockArgs, DepositRequest, OutPoint, Script},
     prelude::*,
 };
@@ -51,7 +51,6 @@ async fn test_repackage_mem_block() {
     let provider = DummyMemPoolProvider {
         deposit_cells,
         fake_blocktime: Duration::from_millis(0),
-        collected_custodians: CollectedCustodianCells::default(),
     };
     mem_pool.set_provider(Box::new(provider));
     mem_pool.reset_mem_block().await.unwrap();
@@ -69,7 +68,7 @@ async fn test_repackage_mem_block() {
     }
 
     let (mem_block, post_merkle_state) = mem_pool.output_mem_block(&OutputParam::default());
-    let (_custodians, block_param) =
+    let block_param =
         generate_produce_block_param(chain.store(), mem_block, post_merkle_state).unwrap();
 
     let deposit_cells = block_param.deposits.clone();

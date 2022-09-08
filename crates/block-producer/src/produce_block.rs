@@ -19,7 +19,7 @@ use gw_store::{
 };
 use gw_types::{
     core::Status,
-    offchain::{BlockParam, CollectedCustodianCells},
+    offchain::BlockParam,
     packed::{
         AccountMerkleState, BlockMerkleState, GlobalState, L2Block, LastFinalizedWithdrawal,
         RawL2Block, SubmitTransactions, SubmitWithdrawals, WithdrawalRequestExtra,
@@ -198,9 +198,9 @@ pub fn produce_block(
 #[instrument(skip_all, fields(mem_block = mem_block.block_info().number().unpack()))]
 pub fn generate_produce_block_param(
     store: &Store,
-    mut mem_block: MemBlock,
+    mem_block: MemBlock,
     post_merkle_state: AccountMerkleState,
-) -> Result<(Option<CollectedCustodianCells>, BlockParam)> {
+) -> Result<BlockParam> {
     let db = store.begin_transaction();
     let tip_block_number = mem_block.block_info().number().unpack().saturating_sub(1);
     let tip_block_hash = {
@@ -346,5 +346,5 @@ pub fn generate_produce_block_param(
         mem_block.state_checkpoints().len(),
     );
 
-    Ok((mem_block.take_finalized_custodians(), param))
+    Ok(param)
 }
