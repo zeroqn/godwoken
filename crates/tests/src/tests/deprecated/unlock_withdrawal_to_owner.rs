@@ -314,7 +314,7 @@ async fn test_build_unlock_to_owner_tx() {
             .into_iter();
         withdrawals.map(|w| (w.hash().into(), w))
     };
-    let generated_withdrawals = gw_block_producer::withdrawal::generate(
+    let generated_withdrawals = super::helper::generate(
         &rollup_context,
         finalized_custodians.clone(),
         &withdrawal_block_result.block,
@@ -621,7 +621,7 @@ async fn test_build_unlock_to_owner_tx() {
         .into_iter()
         .take(revert_count)
         .collect();
-    let reverted_withdrawals = gw_block_producer::withdrawal::revert(
+    let reverted_withdrawals = gw_block_producer::withdrawal::deprecated::revert(
         &rollup_context,
         &contracts_dep,
         withdrawals_to_revert,

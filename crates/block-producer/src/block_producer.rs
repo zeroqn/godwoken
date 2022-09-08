@@ -28,11 +28,11 @@ use gw_types::{
     core::Status,
     offchain::{
         global_state_from_slice, CellInfo, CollectedCustodianCells, DepositInfo, InputCellInfo,
-        RollupContext,
+        RollupContext, WithdrawalsAmount,
     },
     packed::{
         CellDep, CellInput, CellOutput, GlobalState, L2Block, RollupAction, RollupActionUnion,
-        RollupSubmitBlock, Transaction, WithdrawalRequestExtra, WitnessArgs,
+        RollupSubmitBlock, Transaction, WitnessArgs,
     },
     prelude::*,
 };
@@ -418,7 +418,7 @@ impl BlockProducer {
         let ProduceBlockResult {
             mut block,
             mut global_state,
-            withdrawal_extras,
+            withdrawal_extras: _,
         } = block_result;
 
         let number: u64 = block.raw().number().unpack();
@@ -473,7 +473,6 @@ impl BlockProducer {
             global_state: global_state.clone(),
             rollup_input_since,
             rollup_cell: rollup_cell.clone(),
-            withdrawal_extras,
         };
         let tx = match self.complete_tx_skeleton(args).await {
             Ok(tx) => tx,
@@ -650,7 +649,6 @@ impl BlockProducer {
             global_state,
             rollup_input_since,
             rollup_cell,
-            withdrawal_extras,
         } = args;
 
         let rollup_context = self.generator.rollup_context();
@@ -795,38 +793,6 @@ impl BlockProducer {
             .outputs_mut()
             .push((generated_stake.output, generated_stake.output_data));
 
-        // withdrawal cells
-        let parent_global_state = {
-            let parent_block_hash: H256 = block.raw().parent_block_hash().unpack();
-            db.get_block_post_global_state(&parent_block_hash)?
-                .ok_or_else(|| {
-                    anyhow!(
-                        "parent block {:x} global state not found",
-                        parent_block_hash.pack()
-                    )
-                })?
-        };
-        if 2 != global_state.version_u8() {
-            let map_withdrawal_extras = withdrawal_extras.into_iter().map(|w| (w.hash().into(), w));
-            if let Some(generated_withdrawal_cells) = crate::withdrawal::generate(
-                rollup_context,
-                finalized_custodians,
-                &block,
-                &contracts_dep,
-                &map_withdrawal_extras.collect(),
-            )? {
-                tx_skeleton
-                    .cell_deps_mut()
-                    .extend(generated_withdrawal_cells.deps);
-                tx_skeleton
-                    .inputs_mut()
-                    .extend(generated_withdrawal_cells.inputs);
-                tx_skeleton
-                    .outputs_mut()
-                    .extend(generated_withdrawal_cells.outputs);
-            }
-        }
-
         if let Some(reverted_deposits) =
             crate::deposit::revert(rollup_context, &contracts_dep, revert_custodians)?
         {
@@ -852,10 +818,28 @@ impl BlockProducer {
             tx_skeleton.outputs_mut().extend(reverted_deposits.outputs);
         }
 
+        // Merge custodian cells
+        let has_sudt = !finalized_custodians.sudt.is_empty();
+        if let Some(merged_custodians) = crate::custodian::aggregate_balance(
+            rollup_context,
+            finalized_custodians,
+            WithdrawalsAmount::zero_amount(),
+        )? {
+            if has_sudt {
+                { tx_skeleton.cell_deps_mut() }.push(contracts_dep.l1_sudt_type.clone().into());
+            }
+            { tx_skeleton.cell_deps_mut() }.push(contracts_dep.custodian_cell_lock.clone().into());
+
+            tx_skeleton.inputs_mut().extend(merged_custodians.inputs);
+            tx_skeleton.outputs_mut().extend(merged_custodians.outputs);
+        }
+
         // reverted withdrawal cells
-        if let Some(reverted_withdrawals) =
-            crate::withdrawal::revert(rollup_context, &contracts_dep, revert_withdrawals)?
-        {
+        if let Some(reverted_withdrawals) = crate::withdrawal::deprecated::revert(
+            rollup_context,
+            &contracts_dep,
+            revert_withdrawals,
+        )? {
             log::info!("reverted withdrawals {}", reverted_withdrawals.inputs.len());
 
             tx_skeleton
@@ -914,7 +898,6 @@ struct CompleteTxArgs {
     global_state: GlobalState,
     rollup_input_since: InputSince,
     rollup_cell: CellInfo,
-    withdrawal_extras: Vec<WithdrawalRequestExtra>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
