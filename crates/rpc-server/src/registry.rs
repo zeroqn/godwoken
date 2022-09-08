@@ -11,6 +11,7 @@ use gw_config::{
 use gw_dynamic_config::manager::{DynamicConfigManager, DynamicConfigReloadResponse};
 use gw_generator::generator::CyclesPool;
 use gw_generator::utils::get_tx_type;
+use gw_generator::verification::withdrawal::WithdrawalVerifier;
 use gw_generator::{
     error::TransactionError, sudt::build_l2_sudt_script,
     verification::transaction::TransactionVerifier, ArcSwap, Generator,
@@ -29,12 +30,9 @@ use gw_jsonrpc_types::{
     test_mode::TestModePayload,
 };
 use gw_mem_pool::fee::types::FeeItemKind;
-use gw_mem_pool::{
-    custodian::AvailableCustodians,
-    fee::{
-        queue::FeeQueue,
-        types::{FeeEntry, FeeItem},
-    },
+use gw_mem_pool::fee::{
+    queue::FeeQueue,
+    types::{FeeEntry, FeeItem},
 };
 use gw_polyjuice_sender_recover::{
     mem_execute_tx_state::MemExecuteTxStateTree, recover::PolyjuiceSenderRecover,
@@ -88,7 +86,6 @@ type RegistryAddressJsonBytes = JsonBytes;
 const HEADER_NOT_FOUND_ERR_CODE: i64 = -32000;
 const INVALID_NONCE_ERR_CODE: i64 = -32001;
 const BUSY_ERR_CODE: i64 = -32006;
-const CUSTODIAN_NOT_ENOUGH_CODE: i64 = -32007;
 const INTERNAL_ERROR_ERR_CODE: i64 = -32099;
 const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_AVAILABLE_ERR_CODE: i64 = -32601;
@@ -391,11 +388,7 @@ impl Registry {
                     server = server
                         // .with_method("gw_dump_mem_block", dump_mem_block)
                         .with_method("gw_get_rocksdb_mem_stats", get_rocksdb_memory_stats)
-                        .with_method("gw_dump_jemalloc_profiling", dump_jemalloc_profiling)
-                        .with_method(
-                            "gw_submit_withdrawal_request_finalized_custodian_unchecked",
-                            test_submit_withdrawal_request_finalized_custodian_unchecked,
-                        );
+                        .with_method("gw_dump_jemalloc_profiling", dump_jemalloc_profiling);
                 }
             }
         }
@@ -1366,89 +1359,23 @@ async fn submit_l2transaction(
 async fn submit_withdrawal_request(
     Params((withdrawal_request,)): Params<(JsonBytes,)>,
     generator: Data<Generator>,
-    store: Data<Store>,
+    mem_pool_state: Data<Arc<MemPoolState>>,
     (in_queue_request_map, submit_tx): (
         Data<Option<Arc<InQueueRequestMap>>>,
         Data<mpsc::Sender<(InQueueRequestHandle, Request)>>,
     ),
-    rpc_client: Data<RPCClient>,
-) -> Result<JsonH256, RpcError> {
-    inner_submit_withdrawal_request(
-        Params((withdrawal_request,)),
-        generator,
-        store,
-        in_queue_request_map,
-        submit_tx,
-        rpc_client,
-        true,
-    )
-    .await
-}
-
-// TODO: remove code after remove withdrawal cell
-#[allow(clippy::type_complexity)]
-#[instrument(skip_all)]
-async fn inner_submit_withdrawal_request(
-    Params((withdrawal_request,)): Params<(JsonBytes,)>,
-    generator: Data<Generator>,
-    store: Data<Store>,
-    in_queue_request_map: Data<Option<Arc<InQueueRequestMap>>>,
-    submit_tx: Data<mpsc::Sender<(InQueueRequestHandle, Request)>>,
-    rpc_client: Data<RPCClient>,
-    check_finalized_custodian: bool,
 ) -> Result<JsonH256, RpcError> {
     let withdrawal_bytes = withdrawal_request.into_bytes();
     let withdrawal = packed::WithdrawalRequestExtra::from_slice(&withdrawal_bytes)?;
     let withdrawal_hash = withdrawal.hash();
 
-    // verify finalized custodian
-    if check_finalized_custodian {
-        let t = Instant::now();
-        let finalized_custodians = {
-            let db = store.get_snapshot();
-            let tip = db.get_last_valid_tip_block()?;
-            // query withdrawals from ckb-indexer
-            let last_finalized_block_number = generator
-                .rollup_context()
-                .last_finalized_block_number(tip.raw().number().unpack());
-            gw_mem_pool::custodian::query_finalized_custodians(
-                &rpc_client,
-                &db,
-                vec![withdrawal.request()].into_iter(),
-                generator.rollup_context(),
-                last_finalized_block_number,
-            )
-            .await?
-            .expect_any()
-        };
-        log::debug!(
-            "[submit withdrawal] collected {} finalized custodian cells {}ms",
-            finalized_custodians.cells_info.len(),
-            t.elapsed().as_millis()
-        );
-        let available_custodians = AvailableCustodians::from(&finalized_custodians);
-        let withdrawal_generator = gw_mem_pool::withdrawal::Generator::new(
-            generator.rollup_context(),
-            available_custodians,
-        );
-        if let Err(err) = withdrawal_generator.verify_remained_amount(&withdrawal.request()) {
-            return Err(RpcError::Full {
-                code: CUSTODIAN_NOT_ENOUGH_CODE,
-                message: format!(
-                    "Withdrawal fund are still finalizing, please try again later. error: {}",
-                    err
-                ),
-                data: None,
-            });
-        }
-        if let Err(err) = withdrawal_generator.verified_output(&withdrawal, &Default::default()) {
-            return Err(RpcError::Full {
-                code: INVALID_REQUEST,
-                message: err.to_string(),
-                data: None,
-            });
-        }
-    }
+    let snap = mem_pool_state.load();
+    let asset_script_hash: H256 = withdrawal.raw().sudt_script_hash().unpack();
+    let asset_script = snap.get_asset_script(&asset_script_hash)?;
+
+    let state = snap.state()?;
+    let verifier = WithdrawalVerifier::new(&state, generator.rollup_context());
+    verifier.verify(&withdrawal, asset_script)?;
 
     let permit = submit_tx.try_reserve().map_err(|err| match err {
         mpsc::error::TrySendError::Closed(_) => RpcError::Provided {
@@ -2042,31 +1969,6 @@ async fn get_mem_pool_state_ready(
     mem_pool_state: Data<Arc<MemPoolState>>,
 ) -> Result<bool, RpcError> {
     Ok(mem_pool_state.completed_initial_syncing())
-}
-
-// TODO: remove code after remove withdrawal cell
-#[allow(clippy::type_complexity)]
-#[instrument(skip_all)]
-async fn test_submit_withdrawal_request_finalized_custodian_unchecked(
-    Params((withdrawal_request,)): Params<(JsonBytes,)>,
-    generator: Data<Generator>,
-    store: Data<Store>,
-    (in_queue_request_map, submit_tx): (
-        Data<Option<Arc<InQueueRequestMap>>>,
-        Data<mpsc::Sender<(InQueueRequestHandle, Request)>>,
-    ),
-    rpc_client: Data<RPCClient>,
-) -> Result<JsonH256, RpcError> {
-    inner_submit_withdrawal_request(
-        Params((withdrawal_request,)),
-        generator,
-        store,
-        in_queue_request_map,
-        submit_tx,
-        rpc_client,
-        false,
-    )
-    .await
 }
 
 async fn tests_produce_block(

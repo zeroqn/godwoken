@@ -35,8 +35,8 @@ use gw_traits::CodeStore;
 use gw_types::{
     offchain::DepositInfo,
     packed::{
-        AccountMerkleState, BlockInfo, L2Block, L2Transaction, Script, TxReceipt,
-        WithdrawalRequest, WithdrawalRequestExtra,
+        AccountMerkleState, BlockInfo, L2Transaction, Script, TxReceipt, WithdrawalRequest,
+        WithdrawalRequestExtra,
     },
     prelude::{Pack, Unpack},
 };
@@ -63,7 +63,6 @@ use crate::{
     },
     traits::MemPoolProvider,
     types::EntryList,
-    withdrawal::Generator as WithdrawalGenerator,
 };
 
 #[derive(Debug, Default)]
@@ -395,26 +394,6 @@ impl MemPool {
         // verify withdrawal signature
         self.generator
             .check_withdrawal_signature(state, withdrawal)?;
-
-        // verify finalized custodian
-        let finalized_custodians = {
-            // query withdrawals from ckb-indexer
-            let last_finalized_block_number = self
-                .generator
-                .rollup_context()
-                .last_finalized_block_number(self.current_tip.1);
-            self.provider
-                .query_available_custodians(
-                    vec![withdrawal.request()],
-                    last_finalized_block_number,
-                    self.generator.rollup_context().to_owned(),
-                )
-                .await?
-        };
-        let avaliable_custodians = AvailableCustodians::from(&finalized_custodians);
-        let withdrawal_generator =
-            WithdrawalGenerator::new(self.generator.rollup_context(), avaliable_custodians);
-        withdrawal_generator.verify_remained_amount(&withdrawal.request())?;
 
         // withdrawal basic verification
         let db = self.store.begin_transaction();
@@ -1012,10 +991,6 @@ impl MemPool {
         // verify the withdrawals
         let mut unused_withdrawals = Vec::with_capacity(withdrawals.len());
         let mut total_withdrawal_capacity: u128 = 0;
-        let mut withdrawal_verifier = crate::withdrawal::Generator::new(
-            self.generator.rollup_context(),
-            available_custodians,
-        );
         // start track withdrawal
         state.tracker_mut().enable();
         for withdrawal in withdrawals {
@@ -1054,17 +1029,6 @@ impl MemPool {
                 continue;
             }
             total_withdrawal_capacity = new_total_withdrwal_capacity;
-
-            if let Err(err) =
-                withdrawal_verifier.include_and_verify(&withdrawal, &L2Block::default())
-            {
-                log::info!(
-                    "[mem-pool] withdrawal contextual verification failed : {}",
-                    err
-                );
-                unused_withdrawals.push(withdrawal_hash);
-                continue;
-            }
 
             // update the state
             match state.apply_withdrawal_request(
