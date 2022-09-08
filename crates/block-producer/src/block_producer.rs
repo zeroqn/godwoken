@@ -765,7 +765,6 @@ impl BlockProducer {
 
         // Simple UDT dep
         if !deposit_cells.is_empty()
-            || !withdrawal_extras.is_empty()
             || !finalized_custodians.sudt.is_empty()
         {
             tx_skeleton
