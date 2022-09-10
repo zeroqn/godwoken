@@ -1,7 +1,8 @@
 #![allow(clippy::mutable_key_type)]
 
 use gw_block_producer::produce_block::{
-    generate_produce_block_param, produce_block, ProduceBlockParam, ProduceBlockResult,
+    generate_produce_block_param, get_last_finalized_withdrawal, produce_block, ProduceBlockParam,
+    ProduceBlockResult,
 };
 use gw_chain::chain::{Chain, L1Action, L1ActionContext, SyncParam};
 use gw_common::{blake2b::new_blake2b, H256};
@@ -705,7 +706,13 @@ pub async fn construct_block_with_timestamp(
     mem_pool.set_provider(Box::new(provider));
 
     let (mem_block, post_merkle_state) = mem_pool.output_mem_block(&OutputParam::default());
-    let block_param = generate_produce_block_param(chain.store(), mem_block, post_merkle_state)?;
+    let last_finalized_withdrawal = get_last_finalized_withdrawal(chain);
+    let block_param = generate_produce_block_param(
+        chain.store(),
+        mem_block,
+        post_merkle_state,
+        last_finalized_withdrawal,
+    )?;
     let reverted_block_root = chain.store().get_reverted_block_smt_root().unwrap();
     let param = ProduceBlockParam {
         stake_cell_owner_lock_hash,

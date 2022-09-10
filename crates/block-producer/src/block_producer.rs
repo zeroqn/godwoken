@@ -3,7 +3,8 @@
 use crate::{
     custodian::query_mergeable_custodians,
     produce_block::{
-        generate_produce_block_param, produce_block, ProduceBlockParam, ProduceBlockResult,
+        generate_produce_block_param, get_last_finalized_withdrawal, produce_block,
+        ProduceBlockParam, ProduceBlockResult,
     },
     replay_block::ReplayBlock,
     test_mode_control::TestModeControl,
@@ -363,8 +364,16 @@ impl BlockProducer {
 
             let t = Instant::now();
             let tip_block_number = mem_block.block_info().number().unpack().saturating_sub(1);
-            let produce_block_param =
-                generate_produce_block_param(&self.store, mem_block, post_block_state)?;
+            let last_finalized_withdrawal = {
+                let chain = self.chain.lock().await;
+                get_last_finalized_withdrawal(&*chain)
+            };
+            let produce_block_param = generate_produce_block_param(
+                &self.store,
+                mem_block,
+                post_block_state,
+                last_finalized_withdrawal,
+            )?;
             rollup_input_since.verify_block_timestamp(produce_block_param.timestamp)?;
 
             let finalized_custodians = {
