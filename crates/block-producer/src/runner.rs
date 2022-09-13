@@ -240,8 +240,19 @@ impl ChainTask {
                 }
             }
 
+            if let Some(ref withdrawal_finalizer) = ctx.withdrawal_finalizer {
+                if let Err(err) = withdrawal_finalizer.handle_event(&event).await {
+                    log::error!("[withdrawal finalizer] {}", err);
+                }
+            }
+
+            let has_finalize_tx = { ctx.withdrawal_finalizer.as_ref() }
+                .and_then(|finalizer| finalizer.last_finalize_tx())
+                .is_some();
             if let Some(ref mut block_producer) = ctx.block_producer {
-                if let Err(err) = self
+                if has_finalize_tx {
+                    log::debug!("[withdrawal finalizer] wait finalize tx committed");
+                } else if let Err(err) = self
                     .block_produce_metrics_monitor
                     .instrument(block_producer.handle_event(event.clone()))
                     .await
@@ -255,12 +266,6 @@ impl ChainTask {
                         event,
                         err
                     );
-                }
-            }
-
-            if let Some(ref withdrawal_finalizer) = ctx.withdrawal_finalizer {
-                if let Err(err) = withdrawal_finalizer.handle_event(&event).await {
-                    log::error!("[withdrawal finalizer] {}", err);
                 }
             }
 
@@ -781,7 +786,6 @@ pub async fn run(config: Config, skip_config_check: bool) -> Result<()> {
                 contracts_dep_manager,
                 wallet: finalizer_wallet,
                 rollup_config_cell_dep: block_producer_config.rollup_config_cell_dep.into(),
-                last_block_submitted_tx: block_producer.last_submitted_tx_hash(),
             };
             let finalizer = UserWithdrawalFinalizer::new(finalizer_args, config.debug.clone());
 
