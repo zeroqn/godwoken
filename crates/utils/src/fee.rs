@@ -68,27 +68,11 @@ pub async fn fill_tx_fee(
     let mut change_capacity = 0;
     while required_fee > 0 {
         // to filter used input cells
-        let mut taken_outpoints = tx_skeleton.taken_outpoints()?;
-
+        let taken_outpoints = tx_skeleton.taken_outpoints()?;
         // get payment cells
-        let lock_hash = lock_script.hash();
-        let mut cells = { tx_skeleton.live_cells().iter() }
-            .filter_map(|cell_info| {
-                if cell_info.output.lock().hash() == lock_hash && cell_info.data.is_empty() {
-                    Some(cell_info.clone())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        taken_outpoints.extend(cells.iter().map(|c| c.out_point.clone()));
-
-        let total_capacity: u64 = cells.iter().map(|c| c.output.capacity().unpack()).sum();
-        if total_capacity < required_fee {
-            let query =
-                client.query_payment_cells(lock_script.clone(), required_fee, &taken_outpoints);
-            cells.extend(query.await?);
-        }
+        let cells = client
+            .query_payment_cells(lock_script.clone(), required_fee, &taken_outpoints)
+            .await?;
         assert!(!cells.is_empty(), "need cells to pay fee");
 
         // put cells in tx skeleton
