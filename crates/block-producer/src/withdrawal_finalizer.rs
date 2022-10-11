@@ -29,8 +29,8 @@ use gw_types::{
         global_state_from_slice, CollectedCustodianCells, InputCellInfo, RollupContext, TxStatus,
     },
     packed::{
-        CellDep, CellInput, L2Block, LastFinalizedWithdrawal, RollupAction, RollupActionUnion,
-        Script, Transaction, WithdrawalRequestExtra, WitnessArgs,
+        CellDep, CellInput, L2Block, RollupAction, RollupActionUnion, Script, Transaction,
+        WithdrawalCursor, WithdrawalRequestExtra, WitnessArgs,
     },
     prelude::{Builder, Entity, FromSliceShouldBeOk, Pack, Unpack},
 };
@@ -135,7 +135,7 @@ impl UserWithdrawalFinalizer {
 
             match rpc_client.send_transaction(&tx).await {
                 Ok(tx_hash) => {
-                    tracing::info!(tx_hash = %tx_hash.pack(), blk_idx = ?(pending_finalized.unpack_block_index()), "finalize withdrawal");
+                    tracing::info!(tx_hash = %tx_hash.pack(), blk_idx = ?(pending_finalized.unpack_cursor()), "finalize withdrawal");
                     self.set_last_finalize_tx(Some(tx_hash))?;
                 }
                 Err(err) => bail!("send finalize withdrawal tx failed {}", err),
@@ -187,7 +187,7 @@ pub trait FinalizeWithdrawalToOwner {
 
     fn get_pending_finalized_withdrawals(
         &self,
-        last_finalized_withdrawal: &LastFinalizedWithdrawal,
+        last_finalized_withdrawal: &WithdrawalCursor,
         last_finalized_block_number: u64,
     ) -> Result<Option<Vec<BlockWithdrawals>>>;
 
@@ -201,9 +201,7 @@ pub trait FinalizeWithdrawalToOwner {
 
     async fn complete_tx(&self, tx_skeleton: TransactionSkeleton) -> Result<Transaction>;
 
-    async fn query_and_finalize_to_owner(
-        &self,
-    ) -> Result<Option<(Transaction, LastFinalizedWithdrawal)>> {
+    async fn query_and_finalize_to_owner(&self) -> Result<Option<(Transaction, WithdrawalCursor)>> {
         let rollup_input = match self.query_rollup_cell().await? {
             Some(cell) => cell,
             None => {
@@ -235,7 +233,7 @@ pub trait FinalizeWithdrawalToOwner {
         };
 
         let last_finalized_block_number: u64 = global_state.last_finalized_block_number().unpack();
-        let last_finalized_withdrawal = global_state.last_finalized_withdrawal();
+        let last_finalized_withdrawal = global_state.finalized_withdrawal_cursor();
 
         let block_withdrawals = match self.get_pending_finalized_withdrawals(
             &last_finalized_withdrawal,
@@ -265,11 +263,11 @@ pub trait FinalizeWithdrawalToOwner {
 
         let last_finalized_withdrawal =
             { block_withdrawals.last().expect("last block withdrawals") }
-                .to_last_finalized_withdrawal();
+                .to_last_finalized_withdrawal()?;
 
         let rollup_output = {
             let post_global_state = { global_state.clone().as_builder() }
-                .last_finalized_withdrawal(last_finalized_withdrawal.clone())
+                .finalized_withdrawal_cursor(last_finalized_withdrawal.clone())
                 .build();
 
             (
@@ -472,7 +470,7 @@ impl FinalizeWithdrawalToOwner for DefaultFinalizer {
 
     fn get_pending_finalized_withdrawals(
         &self,
-        last_finalized_withdrawal: &LastFinalizedWithdrawal,
+        last_finalized_withdrawal: &WithdrawalCursor,
         last_finalized_block_number: u64,
     ) -> Result<Option<Vec<BlockWithdrawals>>> {
         get_pending_finalized_withdrawals(
@@ -526,11 +524,11 @@ impl FinalizeWithdrawalToOwner for DefaultFinalizer {
 fn get_pending_finalized_withdrawals(
     store: &impl ChainStore,
     pending: &PendingFinalizedWithdrawal,
-    last_finalized_withdrawal: &LastFinalizedWithdrawal,
+    last_finalized_withdrawal_cursor: &WithdrawalCursor,
     last_finalized_block_number: u64,
 ) -> Result<Option<Vec<BlockWithdrawals>>> {
-    let (last_wthdr_bn, last_wthdr_idx) = last_finalized_withdrawal.unpack_block_index();
-    tracing::debug!(finalized_withdrawal = ?(last_wthdr_bn, last_wthdr_idx), "get pending finalized");
+    let withdrawal_cursor = last_finalized_withdrawal_cursor.unpack_cursor();
+    tracing::debug!(finalized_withdrawal = ?(withdrawal_cursor), "get pending finalized");
 
     let ensure_get_block = |num: u64| -> Result<L2Block> {
         match store.get_block_by_number(num)? {
@@ -539,15 +537,18 @@ fn get_pending_finalized_withdrawals(
         }
     };
 
-    let next_pending_blk_wthdrs_on_chain = match BlockWithdrawals::from_rest(
-        ensure_get_block(last_wthdr_bn)?,
-        last_finalized_withdrawal,
+    let next_pending_blk_wthdrs_on_chain = match BlockWithdrawals::build_from_remained(
+        ensure_get_block(withdrawal_cursor.block_number)?,
+        last_finalized_withdrawal_cursor,
     )? {
         Some(blk_wthdrs) => blk_wthdrs,
-        None => match store.get_block_by_number(last_wthdr_bn + 1)? {
+        None => match store.get_block_by_number(withdrawal_cursor.block_number + 1)? {
             Some(blk) => BlockWithdrawals::new(blk),
             None => {
-                tracing::debug!(blk = last_wthdr_bn + 1, "pending finalized block not found");
+                tracing::debug!(
+                    blk = withdrawal_cursor.block_number + 1,
+                    "pending finalized block not found"
+                );
                 return Ok(None);
             }
         },
@@ -687,7 +688,10 @@ impl PendingFinalizedWithdrawal {
 mod tests {
     use gw_db::schema::Col;
     use gw_store::traits::kv_store::KVStoreRead;
-    use gw_types::{offchain::CellInfo, packed::GlobalState};
+    use gw_types::{
+        offchain::CellInfo,
+        packed::{self, GlobalState},
+    };
 
     use super::*;
     use crate::withdrawal::tests::BlockStore;
@@ -732,7 +736,7 @@ mod tests {
 
             fn get_pending_finalized_withdrawals(
                 &self,
-                last_finalized_withdrawal: &LastFinalizedWithdrawal,
+                last_finalized_withdrawal: &WithdrawalCursor,
                 last_finalized_block_number: u64,
             ) -> Result<Option<Vec<BlockWithdrawals>>>;
 
@@ -759,10 +763,10 @@ mod tests {
         let three = store.produce_block(2);
         let four = store.produce_block(3);
 
-        let last_finalized = LastFinalizedWithdrawal::pack_block_index(
-            zero.number(),
-            LastFinalizedWithdrawal::INDEX_ALL_WITHDRAWALS,
-        );
+        let last_finalized = packed::WithdrawalCursor::new_builder()
+            .block_number(zero.number().pack())
+            .index(packed::WithdrawalCursor::ALL_WITHDRAWALS.pack())
+            .build();
 
         // Next pending block > last_finalized_block_number
         let ret = get_pending_finalized_withdrawals(&store, &pending, &last_finalized, 0).unwrap();
@@ -806,10 +810,10 @@ mod tests {
         assert_eq!(pending.block_range(), None);
 
         // Max withdrawals
-        let last_finalized = LastFinalizedWithdrawal::pack_block_index(
-            one.number(),
-            LastFinalizedWithdrawal::INDEX_ALL_WITHDRAWALS,
-        );
+        let last_finalized = packed::WithdrawalCursor::new_builder()
+            .block_number(one.number().pack())
+            .index(packed::WithdrawalCursor::ALL_WITHDRAWALS.pack())
+            .build();
         let fulfilled = get_pending_finalized_withdrawals(&store, &pending, &last_finalized, 4)
             .unwrap()
             .unwrap();
@@ -830,10 +834,10 @@ mod tests {
         let zero = store.produce_block(0);
 
         // Next pending block on chain not found
-        let last_finalized = LastFinalizedWithdrawal::pack_block_index(
-            zero.number(),
-            LastFinalizedWithdrawal::INDEX_ALL_WITHDRAWALS,
-        );
+        let last_finalized = packed::WithdrawalCursor::new_builder()
+            .block_number(zero.number().pack())
+            .index(packed::WithdrawalCursor::ALL_WITHDRAWALS.pack())
+            .build();
 
         let ret = get_pending_finalized_withdrawals(&store, &pending, &last_finalized, 1).unwrap();
         assert!(ret.is_none());
@@ -857,20 +861,20 @@ mod tests {
         let two = store.produce_block(1);
         let three = store.produce_block(2);
 
-        let last_finalized = LastFinalizedWithdrawal::pack_block_index(
-            one.number(),
-            LastFinalizedWithdrawal::INDEX_ALL_WITHDRAWALS,
-        );
+        let last_finalized = packed::WithdrawalCursor::new_builder()
+            .block_number(one.number().pack())
+            .index(packed::WithdrawalCursor::ALL_WITHDRAWALS.pack())
+            .build();
 
         let ret = get_pending_finalized_withdrawals(&store, &pending, &last_finalized, 2).unwrap();
         assert!(ret.is_none());
         assert_eq!(pending.block_range(), Some(two.number()..=two.number()));
 
         // range.start() != next_pending_blk_num_on_chain
-        let reorg_last_finalized = LastFinalizedWithdrawal::pack_block_index(
-            zero.number(),
-            LastFinalizedWithdrawal::INDEX_ALL_WITHDRAWALS,
-        );
+        let reorg_last_finalized = packed::WithdrawalCursor::new_builder()
+            .block_number(zero.number().pack())
+            .index(packed::WithdrawalCursor::ALL_WITHDRAWALS.pack())
+            .build();
 
         let ret =
             get_pending_finalized_withdrawals(&store, &pending, &reorg_last_finalized, 2).unwrap();
@@ -878,10 +882,10 @@ mod tests {
         assert_eq!(pending.block_range(), None);
 
         // range.end() > last_finalized_block_number
-        let last_finalized = LastFinalizedWithdrawal::pack_block_index(
-            one.number(),
-            LastFinalizedWithdrawal::INDEX_ALL_WITHDRAWALS,
-        );
+        let last_finalized = packed::WithdrawalCursor::new_builder()
+            .block_number(one.number().pack())
+            .index(packed::WithdrawalCursor::ALL_WITHDRAWALS.pack())
+            .build();
 
         let ret = get_pending_finalized_withdrawals(&store, &pending, &last_finalized, 3).unwrap();
         assert!(ret.is_none());
@@ -893,10 +897,10 @@ mod tests {
         assert_eq!(pending.block_range(), None);
 
         // push error
-        let last_finalized = LastFinalizedWithdrawal::pack_block_index(
-            one.number(),
-            LastFinalizedWithdrawal::INDEX_ALL_WITHDRAWALS,
-        );
+        let last_finalized = packed::WithdrawalCursor::new_builder()
+            .block_number(one.number().pack())
+            .index(packed::WithdrawalCursor::ALL_WITHDRAWALS.pack())
+            .build();
 
         let ret = get_pending_finalized_withdrawals(&store, &pending, &last_finalized, 3).unwrap();
         assert!(ret.is_none());
