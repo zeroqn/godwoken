@@ -1,0 +1,24 @@
+#!/bin/bash
+
+cargo clean -p gw-tools
+cargo clean -p gw-web3-indexer
+cargo clean -p gw-tests
+cargo clean -p gw-dynamic-config
+cargo clean -p gw-mem-pool
+cargo clean -p gw-generator
+cargo clean -p gw-tools
+cargo clean -p gw-block-producer
+cargo clean -p gw-common
+cargo clean -p gw-types
+cargo clean -p gw-chain
+cargo clean -p gw-replay-chain
+cargo clean -p gw-store
+cargo clean -p gw-rpc-server
+cargo clean -p gw-rpc-client
+cargo clean -p gw-benches
+cargo clean -p gw-utils
+# cargo clean -p gw-poa
+cargo clean -p gw-tx-filter
+cargo clean -p gw-challenge
+cargo clean -p gw-ckb-hardfork
+cargo clean -p gw-eoa-mapping

@@ -102,6 +102,8 @@ async fn serve<R: Router + 'static>(
             .body(Body::empty())
             .map_err(|e| anyhow::anyhow!("JSONRPC Preflight Request error: {:?}", e));
     }
+
+    tracing::info!("rpc-server {:?}", req.headers());
     // Handler here is adapted from https://github.com/kardeiz/jsonrpc-v2/blob/1acf0b911c698413950d0b101ec4255cabd0d4ec/src/lib.rs#L1302
     let mut buf = if let Some(content_length) = req
         .headers()
