@@ -66,7 +66,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{mpsc, Mutex};
-use tracing::instrument;
+use tracing::{instrument, Span};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::in_queue_request_map::{InQueueRequestHandle, InQueueRequestMap};
 
@@ -140,6 +141,11 @@ fn to_jsonh256(v: H256) -> JsonH256 {
     h.into()
 }
 
+pub struct RequestContext {
+    in_queue_handle: InQueueRequestHandle,
+    trace: opentelemetry::Context,
+}
+
 pub struct ExecutionTransactionContext {
     mem_pool: MemPool,
     generator: Arc<Generator>,
@@ -152,7 +158,7 @@ pub struct ExecutionTransactionContext {
 
 pub struct SubmitTransactionContext {
     in_queue_request_map: Option<Arc<InQueueRequestMap>>,
-    submit_tx: mpsc::Sender<(InQueueRequestHandle, Request)>,
+    submit_tx: mpsc::Sender<(Request, RequestContext)>,
     mem_pool_state: Arc<MemPoolState>,
     rate_limiter: Option<SendTransactionRateLimiter>,
     rate_limit_config: Option<RPCRateLimit>,
@@ -198,7 +204,7 @@ pub struct Registry {
     mem_pool_config: MemPoolConfig,
     backend_info: Vec<BackendInfo>,
     node_mode: NodeMode,
-    submit_tx: mpsc::Sender<(InQueueRequestHandle, Request)>,
+    submit_tx: mpsc::Sender<(Request, RequestContext)>,
     rpc_client: RPCClient,
     send_tx_rate_limit: Option<RPCRateLimit>,
     server_config: RPCServerConfig,
@@ -442,8 +448,8 @@ impl Request {
 
 struct RequestSubmitter {
     mem_pool: Arc<Mutex<gw_mem_pool::pool::MemPool>>,
-    submit_rx: mpsc::Receiver<(InQueueRequestHandle, Request)>,
-    queue: FeeQueue<InQueueRequestHandle>,
+    submit_rx: mpsc::Receiver<(Request, RequestContext)>,
+    queue: FeeQueue<RequestContext>,
     dynamic_config_manager: Arc<ArcSwap<DynamicConfigManager>>,
     generator: Arc<Generator>,
     mem_pool_state: Arc<MemPoolState>,
@@ -558,13 +564,18 @@ impl RequestSubmitter {
             // wait next tx if queue is empty
             if queue.is_empty() {
                 // blocking current task until we receive a tx
-                let (handle, req) = match self.submit_rx.recv().await {
+                let (req, ctx) = match self.submit_rx.recv().await {
                     Some(req) => req,
                     None => {
                         log::error!("rpc submit tx is closed");
                         return;
                     }
                 };
+
+                let add_fee_queue_span = tracing::info_span!("fee_queue.add");
+                add_fee_queue_span.set_parent(ctx.trace.clone());
+                let _entered = add_fee_queue_span.enter();
+
                 let snap = self.mem_pool_state.load();
                 let state = snap.state().expect("get mem state");
                 let kind = req.kind();
@@ -580,7 +591,7 @@ impl RequestSubmitter {
                                 hash,
                             );
                         } else {
-                            queue.add(entry, handle);
+                            queue.add(entry, ctx);
                         }
                     }
                     Err(err) => {
@@ -597,7 +608,11 @@ impl RequestSubmitter {
             // push txs to fee priority queue
             let snap = self.mem_pool_state.load();
             let state = snap.state().expect("get mem state");
-            while let Ok((handle, req)) = self.submit_rx.try_recv() {
+            while let Ok((req, ctx)) = self.submit_rx.try_recv() {
+                let add_fee_queue_span = tracing::info_span!("fee_queue.add");
+                add_fee_queue_span.set_parent(ctx.trace.clone());
+                let _entered = add_fee_queue_span.enter();
+
                 let kind = req.kind();
                 let hash = req.hash();
                 let dynamic_config_manager = self.dynamic_config_manager.load();
@@ -611,7 +626,7 @@ impl RequestSubmitter {
                                 hash,
                             );
                         } else {
-                            queue.add(entry, handle);
+                            queue.add(entry, ctx);
                         }
                     }
                     Err(err) => {
@@ -685,7 +700,11 @@ impl RequestSubmitter {
                 let state = snap.state().expect("get mem state");
                 let mut block_cycles_limit_reached = false;
 
-                for (entry, handle) in items {
+                for (entry, ctx) in items {
+                    let push_mem_pool_span = tracing::info_span!("mem_pool.push");
+                    push_mem_pool_span.set_parent(ctx.trace.clone());
+                    let _entered = push_mem_pool_span.enter();
+
                     if let FeeItemKind::Tx = entry.item.kind() {
                         if !block_cycles_limit_reached
                             && entry.cycles_limit > mem_pool.cycles_pool().available_cycles()
@@ -697,7 +716,7 @@ impl RequestSubmitter {
                         }
 
                         if block_cycles_limit_reached {
-                            queue.add(entry, handle);
+                            queue.add(entry, ctx);
                             continue;
                         }
                     }
@@ -742,7 +761,7 @@ impl RequestSubmitter {
                             log::info!("mem block cycles limit reached for tx {}", hash);
 
                             block_cycles_limit_reached = true;
-                            queue.add(entry, handle);
+                            queue.add(entry, ctx);
 
                             continue;
                         }
@@ -1407,7 +1426,11 @@ async fn submit_l2transaction(
         .insert(tx_hash_in_queue, request.clone())
     {
         // Send if the request wasn't already in the map.
-        permit.send((handle, request));
+        let ctx = RequestContext {
+            in_queue_handle: handle,
+            trace: Span::current().context(),
+        };
+        permit.send((request, ctx));
     }
 
     Ok(tx_hash_json)
@@ -1422,7 +1445,7 @@ async fn submit_withdrawal_request(
     generator: Data<Generator>,
     store: Data<Store>,
     in_queue_request_map: Data<Option<Arc<InQueueRequestMap>>>,
-    submit_tx: Data<mpsc::Sender<(InQueueRequestHandle, Request)>>,
+    submit_tx: Data<mpsc::Sender<(Request, RequestContext)>>,
 ) -> Result<JsonH256, RpcError> {
     let withdrawal_bytes = withdrawal_request.into_bytes();
     let withdrawal = packed::WithdrawalRequestExtra::from_slice(&withdrawal_bytes)?;
@@ -1476,7 +1499,11 @@ async fn submit_withdrawal_request(
         .insert(withdrawal_hash.into(), request.clone())
     {
         // Send if the request wasn't already in the map.
-        permit.send((handle, request));
+        let ctx = RequestContext {
+            in_queue_handle: handle,
+            trace: Span::current().context(),
+        };
+        permit.send((request, ctx));
     }
 
     Ok(withdrawal_hash.into())
