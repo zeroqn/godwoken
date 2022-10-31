@@ -49,3 +49,4 @@ tracing = { version = "0.1", features = ["attributes"] }
 prometheus-client = "0.18.0"
 opentelemetry-http = "0.7"
 opentelemetry = { version = "0.18.0", features = ["rt-tokio"] }
+tracing-opentelemetry = "0.18.0"

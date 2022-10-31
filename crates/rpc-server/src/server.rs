@@ -8,9 +8,11 @@ use gw_utils::liveness::Liveness;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{body::HttpBody, server::conn::AddrIncoming, Body, Method, Request, Response, Server};
 use tokio::net::TcpListener;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use jsonrpc_v2::{RequestKind, ResponseObjects, Router, Server as JsonrpcServer};
 use tokio::sync::{broadcast, mpsc};
+use tracing::Instrument;
 
 use crate::registry::Registry;
 
@@ -103,7 +105,6 @@ async fn serve<R: Router + 'static>(
             .map_err(|e| anyhow::anyhow!("JSONRPC Preflight Request error: {:?}", e));
     }
 
-    tracing::info!("rpc-server {:?}", req.headers());
     // Handler here is adapted from https://github.com/kardeiz/jsonrpc-v2/blob/1acf0b911c698413950d0b101ec4255cabd0d4ec/src/lib.rs#L1302
     let mut buf = if let Some(content_length) = req
         .headers()
@@ -116,13 +117,24 @@ async fn serve<R: Router + 'static>(
         bytes_v10::BytesMut::default()
     };
 
+    let req_trace_ctx = opentelemetry::global::get_text_map_propagator(|p| {
+        let extractor = opentelemetry_http::HeaderExtractor(req.headers());
+        p.extract(&extractor)
+    });
+    let handle_span = tracing::info_span!("rpc.handle");
+    handle_span.set_parent(req_trace_ctx.clone());
+
     let mut body = req.into_body();
 
     while let Some(chunk) = body.data().await {
         buf.extend(chunk?);
     }
 
-    match rpc.handle(RequestKind::Bytes(buf.freeze())).await {
+    match rpc
+        .handle(RequestKind::Bytes(buf.freeze()))
+        .instrument(handle_span)
+        .await
+    {
         ResponseObjects::Empty => hyper::Response::builder()
             .status(hyper::StatusCode::NO_CONTENT)
             .body(hyper::Body::from(Vec::<u8>::new()))

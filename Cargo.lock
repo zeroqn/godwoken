@@ -2038,6 +2038,7 @@ dependencies = [
  "tikv-jemalloc-sys",
  "tokio",
  "tracing",
+ "tracing-opentelemetry",
 ]
 
 [[package]]
