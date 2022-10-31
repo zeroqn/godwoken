@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 use gw_config::Trace;
 use tracing_subscriber::prelude::*;
@@ -36,7 +38,22 @@ pub fn init(trace: Option<Trace>) -> Result<ShutdownGuard> {
                 tracing_opentelemetry::layer().with_tracer(tracer)
             };
 
-            registry.with(jaeger_layer).try_init()?
+            let loki_layer = {
+                let url = std::env::var("LOKI_URL")
+                    .unwrap_or_else(|_| "http://localhost:3100".into())
+                    .parse()?;
+                let service_name =
+                    std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "godwoken".into());
+                let labels = HashMap::from([("service".into(), service_name.into())]);
+                let extras = HashMap::new();
+
+                let (layer, task) = tracing_loki::layer(url, labels, extras)?;
+                tokio::spawn(task);
+
+                layer
+            };
+
+            registry.with(jaeger_layer).with(loki_layer).try_init()?
         }
         Some(Trace::TokioConsole) => {
             // Set up tokio console-subscriber. This should be used in **dev env** only.

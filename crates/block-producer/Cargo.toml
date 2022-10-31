@@ -44,6 +44,7 @@ thiserror = "1.0"
 tracing = { version = "0.1", features = ["attributes"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "parking_lot", "smallvec", "tracing-log", "json"] }
 tracing-opentelemetry = "0.18.0"
+tracing-loki = "0.2"
 opentelemetry-jaeger = { version = "0.17.0", features = ["rt-tokio"] }
 opentelemetry = { version = "0.18.0", features = ["rt-tokio"] }
 # unstable features
