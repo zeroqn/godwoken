@@ -1,6 +1,12 @@
 use crate::utils::{JsonH256, TracingHttpClient};
 use anyhow::Result;
-use gw_jsonrpc_types::{ckb_jsonrpc_types::*, godwoken::RegistryAddress};
+use gw_jsonrpc_types::{
+    ckb_jsonrpc_types::*,
+    godwoken::{
+        GetVerbose, L2BlockView, L2BlockWithStatus, L2TransactionWithStatus, RegistryAddress,
+        TxReceipt,
+    },
+};
 use jsonrpc_utils::rpc_client;
 
 #[derive(Clone)]
@@ -16,6 +22,16 @@ impl GWClient {
         script_hash: JsonH256,
         registry_id: Uint32,
     ) -> Result<Option<RegistryAddress>>;
+    pub async fn gw_get_tip_block_hash(&self) -> Result<JsonH256>;
+    pub async fn gw_get_block(&self, block_hash: JsonH256) -> Result<Option<L2BlockWithStatus>>;
+    pub async fn gw_get_block_by_number(&self, block_number: Uint64)
+        -> Result<Option<L2BlockView>>;
+    pub async fn gw_get_transaction(
+        &self,
+        tx_hash: JsonH256,
+        verbose: Option<GetVerbose>,
+    ) -> Result<Option<L2TransactionWithStatus>>;
+    pub async fn gw_get_transaction_receipt(&self, tx_hash: JsonH256) -> Result<Option<TxReceipt>>;
 }
 
 impl GWClient {
